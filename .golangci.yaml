@@ -1,0 +1,47 @@
+# Options for analysis running.
+run:
+  timeout: 5m
+  tests: true
+# output configuration options
+output:
+  format: "colored-line-number"
+linters-settings:
+  revive:
+    rules:
+      - name: package-comments
+        severity: warning
+        disabled: true
+  stylecheck:
+    checks: ["all", "ST1*"]
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+
+    - goconst
+    - gofumpt
+    - goimports
+    - gci
+    - gosec
+    - gocritic
+    - loggercheck
+    - misspell
+    - revive
+    - unconvert
+    - unparam
+
+    - bodyclose
+    - godot
+    - nakedret
+    - stylecheck
+    - tparallel
+issues:
+  exclude-use-default: false
+severity:
+  default-severity: error

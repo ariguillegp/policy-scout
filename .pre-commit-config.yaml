@@ -1,0 +1,27 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+    -   id: check-added-large-files
+    -   id: check-shebang-scripts-are-executable
+    -   id: check-json
+    -   id: check-merge-conflict
+    -   id: check-symlinks
+    -   id: check-yaml
+    -   id: detect-private-key
+    -   id: end-of-file-fixer
+    -   id: fix-byte-order-marker
+    -   id: trailing-whitespace
+    -   id: mixed-line-ending
+-   repo: https://github.com/TekWizely/pre-commit-golang
+    rev: v1.0.0-rc.1
+    hooks:
+    -  id: golangci-lint-repo-mod
+-   repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.0.0
+    hooks:
+    -  id: conventional-pre-commit
+       stages: [commit-msg]
+       args: []

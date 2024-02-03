@@ -1,0 +1,15 @@
+# Publish source code
+source:
+  enabled: true
+
+# Don't build any binaries
+builds:
+  - skip: true
+
+# Generate changelog
+changelog:
+  skip: false
+  use: github
+  filters:
+    exclude:
+      - "^test"
