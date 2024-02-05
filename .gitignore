@@ -23,3 +23,6 @@ go.work
 # Coverage report files are for local use only
 coverage.out
 coverage.html
+
+# Stores local binaries for testing purposes
+bin/
