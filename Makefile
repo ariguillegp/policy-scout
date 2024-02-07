@@ -36,14 +36,12 @@ test: ## Runs your unit tests and generates HTML coverage report
 .PHONY: build
 build: ## Builds your application binaries
 	@echo "Building your application binaries..."
-
-.PHONY: run
-run: ## Runs your application
-	@echo "Running your application..."
+	@go build -o bin/policy-scout
 
 .PHONY: validate
-validate: setup fmt lint test build clean ## Validates your application
+validate: setup tidy fmt lint test build clean ## Validates your application
 
 .PHONY: clean
 clean: ## Cleans your local development environment
 	@echo "Cleaning your local development environment..."
+	@rm bin/policy-scout
