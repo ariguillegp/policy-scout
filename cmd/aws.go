@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Default indentation increment to build a tree like output.
 const indent string = "    "
 
 // Defining a custom enum to restrict output format values.
