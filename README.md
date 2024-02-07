@@ -20,7 +20,8 @@ Explore your cloud security policies (SCPs and Org Policies) quickly from your t
   * Coming soon ...
 
 ## Usage
-The intended audience of this tool are security practitioners who need to help their clients understand the effect of security policies on their respective cloud accounts. With that in mind, this tool will provide not only the effective policies applied ot the target resource, but its location within the overall org structure. The easiest way to make sure you have proper access to run this tool is to run it from the organization's management account. Further IAM configurations for more restrictive access will be left to the user at this moment.
+The intended audience of this tool are security practitioners who need to help their clients understand the effect of security policies on their respective cloud accounts. With that in mind, this tool will provide not only the location of the target resource (e.g. AWS account) in the organization, but all the policies applied to it. The easiest way to make sure you have proper access to run this tool is to run it from the organization's management account. Further IAM configurations for more restrictive access will be left to the user at this moment.
+
 ```
 $ policy-scout
 A longer description that spans multiple lines and likely contains
