@@ -9,25 +9,25 @@ Explore your cloud security policies (SCPs and Org Policies) quickly from your t
 - [License](#license)
 - [Feedback](#feedback)
 
-### Features
+## Features
 Features
 
-### Usage
+## Usage
 Usage
 
-### Example
+## Example
 Example
 
-### Tooling
-1. [Cobra CLI](https://cobra.dev/)
-2. [GolangCI-Lint](https://golangci-lint.run/)
-3. [Goreleaser](https://goreleaser.com/)
-4. [Github Workflows](https://docs.github.com/en/actions/using-workflows)
-5. [Pre-Commit](https://pre-commit.com/)
-6. [Editorconfig](https://editorconfig.org/)
+## Tooling
+- [Cobra CLI](https://cobra.dev/)
+- [GolangCI-Lint](https://golangci-lint.run/)
+- [Goreleaser](https://goreleaser.com/)
+- [Github Workflows](https://docs.github.com/en/actions/using-workflows)
+- [Pre-Commit](https://pre-commit.com/)
+- [Editorconfig](https://editorconfig.org/)
 
-### License
+## License
 Policy-scout is released under the Apache 2.0 license. See [LICENSE](./LICENSE).
 
-### Feedback
+## Feedback
 Feedback
