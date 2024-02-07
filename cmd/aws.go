@@ -146,7 +146,7 @@ func printPathToAccount(client *organizations.Client, rootID string, targetAccou
 	}
 
 	// Org processing will start from the root node (id: r-xxxxx).
-	queue := []node{
+	toBeProcessed := []node{
 		{
 			path: []string{rootID},
 			id:   rootID,
@@ -154,10 +154,10 @@ func printPathToAccount(client *organizations.Client, rootID string, targetAccou
 	}
 
 	// While we still have nodes to process
-	for len(queue) > 0 {
+	for len(toBeProcessed) > 0 {
 		// Pull the next node from the processing queue
-		currentNode := queue[0]
-		queue = queue[1:]
+		currentNode := toBeProcessed[0]
+		toBeProcessed = toBeProcessed[1:]
 
 		// List accounts
 		childAccounts, err := listChildren(client, currentNode.id, types.ChildTypeAccount)
@@ -193,26 +193,16 @@ func printPathToAccount(client *organizations.Client, rootID string, targetAccou
 					case strings.HasPrefix(id, "ou-"):
 						fmt.Printf("%s|-- OU: %s [%s]\n", prefix, name, id)
 					default:
-						// The org management account will be highlighted in the resulting dataset
-						isManagementAccount := isManagementAccount(client, id)
-						if isManagementAccount {
-							name += " (Management Account)"
-						}
-						allSCPs, err := listAllSCPsForChild(client, id)
+						// Add an indicator to the account name in case it is the org management account
+						name, err = isManagementAccount(client, id, name)
 						if err != nil {
-							return fmt.Errorf("error listing SCPs: %w", err)
+							return fmt.Errorf("error determining if the target account %s is the management account: %v", id, err)
 						}
 
-						// using a map here to remove duplicated SCPs (common with inherited policies)
-						// in this case I don't really care about the values, just the keys in the map
-						unique := make(map[string]bool)
-						// just to make it easier to display via strings.Join instead of an additional loop
-						var scpNames []string
-						for _, scp := range allSCPs {
-							if _, ok := unique[*scp.Name]; !ok {
-								unique[*scp.Name] = true
-								scpNames = append(scpNames, *scp.Name)
-							}
+						// list all SCPs applied to the account (inherited and directly applied)
+						scpNames, err := listSCPsforTargetID(client, id)
+						if err != nil {
+							return fmt.Errorf("error getting SCPs for account %s: %v", childID, err)
 						}
 
 						fmt.Printf("%s|-- Account: %s [%s] (SCPs: %s)\n", prefix, name, id, strings.Join(scpNames, ", "))
@@ -228,7 +218,7 @@ func printPathToAccount(client *organizations.Client, rootID string, targetAccou
 			// tracking path from root node.
 			newPath := append(currentNode.path, childID) // nolint:gocritic
 			// Enqueue the child node for further exploration.
-			queue = append(queue, node{path: newPath, id: childID})
+			toBeProcessed = append(toBeProcessed, node{path: newPath, id: childID})
 		}
 	}
 
@@ -266,31 +256,21 @@ func printEntireOrg(client *organizations.Client, rootID, prefix string, visited
 			}
 
 			// The org management account will be highlighted in the resulting dataset.
-			isManagementAccount := isManagementAccount(client, childID)
 			accountName, err := getNameByID(client, childID)
 			if err != nil {
 				return fmt.Errorf("error getting name for id %s: %v", childID, err)
 			}
 
-			if isManagementAccount {
-				accountName += " (Management Account)"
-			}
-
-			allSCPs, err := listAllSCPsForChild(client, childID)
+			// Add an indicator to the account name in case it is the org management account
+			accountName, err = isManagementAccount(client, childID, accountName)
 			if err != nil {
-				return fmt.Errorf("error listing SCPs: %w", err)
+				return fmt.Errorf("error determining if the target account %s is the management account: %v", childID, err)
 			}
 
-			// using a map here to remove duplicated SCPs (common with inherited policies)
-			// in this case I don't really care about the values, just the keys in the map
-			unique := make(map[string]bool)
-			// just to make it easier to display via strings.Join instead of an additional loop
-			var scpNames []string
-			for _, scp := range allSCPs {
-				if _, ok := unique[*scp.Name]; !ok {
-					unique[*scp.Name] = true
-					scpNames = append(scpNames, *scp.Name)
-				}
+			// list all SCPs applied to the account (inherited and directly applied)
+			scpNames, err := listSCPsforTargetID(client, childID)
+			if err != nil {
+				return fmt.Errorf("error getting SCPs for account %s: %v", childID, err)
 			}
 
 			fmt.Printf("%s|-- Account: %s [%s] (SCPs: %s)\n", prefix, accountName, childID, strings.Join(scpNames, ", "))
@@ -388,15 +368,18 @@ func listSCPsForTarget(client *organizations.Client, targetID string) ([]types.P
 }
 
 // Decides whether accountID corresponds to the management acccount of the org.
-func isManagementAccount(client *organizations.Client, accountID string) bool {
+func isManagementAccount(client *organizations.Client, accountID, accountName string) (string, error) {
 	input := &organizations.DescribeOrganizationInput{}
 
 	result, err := client.DescribeOrganization(context.TODO(), input)
 	if err != nil {
-		return false
+		return "", fmt.Errorf("error describing organization: %v", err)
 	}
 
-	return *result.Organization.MasterAccountId == accountID
+	if *result.Organization.MasterAccountId == accountID {
+		accountName += " (Management Account)"
+	}
+	return accountName, nil
 }
 
 // Get root ID deom your AWS.
@@ -483,4 +466,26 @@ func listParentOUs(client *organizations.Client, entityID string) ([]types.Organ
 	}
 
 	return parentOUs, nil
+}
+
+// List ALL(inherited and directly applied) SCPs for target ID.
+// Also dedups as needed.
+func listSCPsforTargetID(client *organizations.Client, entityID string) ([]string, error) {
+	allSCPs, err := listAllSCPsForChild(client, entityID)
+	if err != nil {
+		return nil, fmt.Errorf("error listing SCPs: %w", err)
+	}
+
+	// using a map here to remove duplicated SCPs (common with inherited policies)
+	// in this case I don't really care about the values, just the keys in the map
+	unique := make(map[string]bool)
+	// just to make it easier to display via strings.Join instead of an additional loop
+	var scpNames []string
+	for _, scp := range allSCPs {
+		if _, ok := unique[*scp.Name]; !ok {
+			unique[*scp.Name] = true
+			scpNames = append(scpNames, *scp.Name)
+		}
+	}
+	return scpNames, nil
 }
