@@ -130,10 +130,10 @@ func displayOrganizationTreeDot() error {
 }
 
 // Text based output.
-func displayOrganizationTreeText(client *organizations.Client, targetAccountID, rootID, prefix string, processedEntities map[string]bool) error {
+func displayOrganizationTreeText(client *organizations.Client, targetAccountID, rootID, prefix string, visited map[string]bool) error {
 	if strings.ToLower(targetAccountID) == "all" {
 		fmt.Printf("%s|-- Root: [%s]\n", prefix, rootID)
-		return printEntireOrg(client, rootID, prefix+indent, processedEntities)
+		return printEntireOrg(client, rootID, prefix+indent, visited)
 	} else {
 		return printPathToAccount(client, rootID, targetAccountID)
 	}
