@@ -10,13 +10,13 @@ Explore your cloud security policies (SCPs and Org Policies) quickly from your t
 - [Feedback](#feedback)
 
 ## Features
-1. AWS SCPs
+* AWS SCPs
   * Given an account ID, displays its location within the AWS organization (path from the root node). The account ID value can be `all` (case insensitive) which will display the entire org tree.
   * Given an account ID, displays all (inherited and directly attached) the SCPs applied to it. If the entire org tree is displayed (`account-id == all`), each account will show the SCPs applied to them.
   * Show an indicator of which account is the management account in the org.
   * Initial supported output format will be `text`, which displays a tree in your preferred terminal. Future iterations will include `json` and `dot`.
 
-1. GCP Org Policies
+* GCP Org Policies
   * Coming soon ...
 
 ## Usage
