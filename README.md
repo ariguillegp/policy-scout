@@ -24,12 +24,7 @@ The intended audience of this tool are security practitioners who need to help t
 
 ```
 $ policy-scout
-A longer description that spans multiple lines and likely contains
-examples and usage of using your application. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.
+Explore policies within your org from a single interface
 
 Usage:
   policy-scout [command]
