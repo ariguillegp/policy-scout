@@ -1,7 +1,7 @@
 # policy-scout
 Explore your cloud security policies (SCPs and Org Policies) quickly from your terminal.
 
-## Table of Contens
+## Table of Contents
 - [Features](#features)
 - [Usage](#usage)
 - [Example](#example)
