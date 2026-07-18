@@ -36,6 +36,20 @@ The selected AWS identity must be able to inspect the organization. Depending on
 
 ## Usage
 
+Check which AWS identity the default credential chain resolves and whether it
+can access AWS Organizations:
+
+```bash
+policy-scout aws auth status
+policy-scout aws auth status --output-format text
+```
+
+The status command calls AWS STS `GetCallerIdentity` and Organizations
+`DescribeOrganization`. It reports the credential source and expiration when
+available, but never displays secret credential values. A successful identity
+check with denied Organizations access is reported in the output and returns a
+nonzero exit status.
+
 Inspect one account (JSON is the default):
 
 ```bash

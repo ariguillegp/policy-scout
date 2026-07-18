@@ -7,12 +7,26 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
+
+type fakeSTSClient struct {
+	getCallerIdentityFn func(context.Context, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
+}
+
+func (fake *fakeSTSClient) GetCallerIdentity(
+	ctx context.Context,
+	input *sts.GetCallerIdentityInput,
+	_ ...func(*sts.Options),
+) (*sts.GetCallerIdentityOutput, error) {
+	return fake.getCallerIdentityFn(ctx, input)
+}
 
 type fakeOrganizationsClient struct {
 	listChildrenFn             func(context.Context, *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error)
@@ -250,6 +264,106 @@ func TestLoadAWSConfigWithoutProfileUsesDefaultChain(t *testing.T) {
 
 	if _, err := loadAWSConfig(context.Background(), "", loader); err != nil {
 		t.Fatalf("load AWS config: %v", err)
+	}
+}
+
+func TestGetAWSAuthStatus(t *testing.T) {
+	t.Parallel()
+
+	expires := time.Date(2026, time.July, 18, 18, 42, 0, 0, time.FixedZone("test", 2*60*60))
+	stsClient := &fakeSTSClient{
+		getCallerIdentityFn: func(context.Context, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
+			return &sts.GetCallerIdentityOutput{
+				Account: aws.String("123456789012"),
+				Arn:     aws.String("arn:aws:sts::123456789012:assumed-role/AuditRole/test"),
+				UserId:  aws.String("AROATEST:test"),
+			}, nil
+		},
+	}
+	organizationsClient := &fakeOrganizationsClient{
+		describeOrganizationFn: func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+			return &organizations.DescribeOrganizationOutput{Organization: &types.Organization{
+				Id:              aws.String("o-exampleorgid"),
+				MasterAccountId: aws.String("123456789012"),
+			}}, nil
+		},
+	}
+
+	status, err := getAWSAuthStatus(context.Background(), aws.Credentials{
+		Source:    "SharedConfigCredentials: /home/test/.aws/credentials",
+		CanExpire: true,
+		Expires:   expires,
+	}, stsClient, organizationsClient)
+	if err != nil {
+		t.Fatalf("get authentication status: %v", err)
+	}
+	if !status.OK || !status.Authenticated || !status.Organizations.Accessible {
+		t.Fatalf("unexpected unsuccessful status: %#v", status)
+	}
+	if status.Identity.AccountID != "123456789012" || status.Organizations.OrganizationID != "o-exampleorgid" {
+		t.Fatalf("unexpected authentication status: %#v", status)
+	}
+	if status.Credentials.ExpiresAt != "2026-07-18T16:42:00Z" {
+		t.Fatalf("expiration is %q, want UTC RFC3339", status.Credentials.ExpiresAt)
+	}
+}
+
+func TestGetAWSAuthStatusReportsOrganizationsDenial(t *testing.T) {
+	t.Parallel()
+
+	stsClient := &fakeSTSClient{
+		getCallerIdentityFn: func(context.Context, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
+			return &sts.GetCallerIdentityOutput{
+				Account: aws.String("123456789012"),
+				Arn:     aws.String("arn:aws:iam::123456789012:user/test"),
+				UserId:  aws.String("AIDATEST"),
+			}, nil
+		},
+	}
+	organizationsClient := &fakeOrganizationsClient{
+		describeOrganizationFn: func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+			return nil, errors.New("AccessDeniedException")
+		},
+	}
+
+	status, err := getAWSAuthStatus(
+		context.Background(),
+		aws.Credentials{Source: "EnvConfigCredentials"},
+		stsClient,
+		organizationsClient,
+	)
+	if err != nil {
+		t.Fatalf("get authentication status: %v", err)
+	}
+	if status.OK || !status.Authenticated || status.Organizations.Accessible {
+		t.Fatalf("unexpected status: %#v", status)
+	}
+	if status.Organizations.Error != "AccessDeniedException" {
+		t.Fatalf("Organizations error is %q", status.Organizations.Error)
+	}
+}
+
+func TestWriteAWSAuthStatusJSON(t *testing.T) {
+	t.Parallel()
+
+	status := awsAuthStatus{
+		OK:            true,
+		Authenticated: true,
+		Identity:      awsAuthIdentity{AccountID: "123456789012", ARN: "arn:example", UserID: "user"},
+		Credentials:   awsAuthCredentials{Source: "EnvConfigCredentials"},
+		Organizations: awsOrganizationsAuthStatus{Accessible: true, OrganizationID: "o-example"},
+	}
+	var output bytes.Buffer
+	if err := writeAWSAuthStatus(&output, status, json); err != nil {
+		t.Fatalf("write JSON authentication status: %v", err)
+	}
+
+	var decoded awsAuthStatus
+	if err := encodingjson.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode authentication status: %v", err)
+	}
+	if !decoded.OK || decoded.Identity.AccountID != "123456789012" {
+		t.Fatalf("unexpected JSON authentication status: %#v", decoded)
 	}
 }
 

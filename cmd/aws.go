@@ -13,11 +13,13 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/spf13/cobra"
 )
 
@@ -70,11 +72,20 @@ type organizationsClient interface {
 	DescribeOrganization(context.Context, *organizations.DescribeOrganizationInput, ...func(*organizations.Options)) (*organizations.DescribeOrganizationOutput, error)
 }
 
+type stsClient interface {
+	GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
+}
+
+type authStatusOrganizationsClient interface {
+	DescribeOrganization(context.Context, *organizations.DescribeOrganizationInput, ...func(*organizations.Options)) (*organizations.DescribeOrganizationOutput, error)
+}
+
 var (
-	accountID string
-	format    outputFormat = json
-	profile   string
-	awsCmd    = &cobra.Command{
+	accountID        string
+	format           outputFormat = json
+	profile          string
+	authStatusFormat outputFormat = json
+	awsCmd                        = &cobra.Command{
 		Use:   "aws --account-id <12-digit-id|all>",
 		Short: "Show AWS organization paths and effective SCPs",
 		Long: `Show the AWS Organizations hierarchy and the inherited and directly
@@ -97,10 +108,29 @@ for input.`,
 			return describeAccount(cmd.Context(), cmd.OutOrStdout(), accountID, profile)
 		},
 	}
+	authCmd = &cobra.Command{
+		Use:   "auth",
+		Short: "Inspect AWS authentication",
+	}
+	authStatusCmd = &cobra.Command{
+		Use:   "status",
+		Short: "Show the resolved AWS identity and Organizations access",
+		Long: `Resolve credentials from the AWS SDK default credential chain, identify
+the caller with AWS STS, and verify access to AWS Organizations. No secret
+credential values are displayed and this command does not prompt for input.`,
+		Example: `  policy-scout aws auth status
+  policy-scout aws auth status --output-format text`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return displayAWSAuthStatus(cmd.Context(), cmd.OutOrStdout(), profile)
+		},
+	}
 )
 
 func init() {
 	rootCmd.AddCommand(awsCmd)
+	awsCmd.AddCommand(authCmd)
+	authCmd.AddCommand(authStatusCmd)
 
 	awsCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS shared-config profile to use (overrides AWS_PROFILE)")
 
@@ -111,6 +141,141 @@ func init() {
 	if err := awsCmd.RegisterFlagCompletionFunc("output-format", outputFormatCompletion); err != nil {
 		panic(err)
 	}
+
+	authStatusCmd.Flags().VarP(&authStatusFormat, "output-format", "o", `output format: "json" or "text"`)
+	if err := authStatusCmd.RegisterFlagCompletionFunc("output-format", outputFormatCompletion); err != nil {
+		panic(err)
+	}
+}
+
+type awsAuthStatus struct {
+	OK            bool                       `json:"ok"`
+	Authenticated bool                       `json:"authenticated"`
+	Identity      awsAuthIdentity            `json:"identity"`
+	Credentials   awsAuthCredentials         `json:"credentials"`
+	Organizations awsOrganizationsAuthStatus `json:"organizations"`
+}
+
+type awsAuthIdentity struct {
+	AccountID string `json:"account_id"`
+	ARN       string `json:"arn"`
+	UserID    string `json:"user_id"`
+}
+
+type awsAuthCredentials struct {
+	Source    string `json:"source"`
+	CanExpire bool   `json:"can_expire"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+type awsOrganizationsAuthStatus struct {
+	Accessible          bool   `json:"accessible"`
+	OrganizationID      string `json:"organization_id,omitempty"`
+	ManagementAccountID string `json:"management_account_id,omitempty"`
+	Error               string `json:"error,omitempty"`
+}
+
+func displayAWSAuthStatus(ctx context.Context, writer io.Writer, selectedProfile string) error {
+	cfg, err := loadAWSConfig(ctx, selectedProfile, config.LoadDefaultConfig)
+	if err != nil {
+		return fmt.Errorf("load AWS configuration from the default credential chain: %w", err)
+	}
+	credentials, err := cfg.Credentials.Retrieve(ctx)
+	if err != nil {
+		return fmt.Errorf("retrieve AWS credentials from the default credential chain: %w", err)
+	}
+
+	status, err := getAWSAuthStatus(
+		ctx,
+		credentials,
+		sts.NewFromConfig(cfg),
+		organizations.NewFromConfig(cfg),
+	)
+	if err != nil {
+		return err
+	}
+	if err := writeAWSAuthStatus(writer, status, authStatusFormat); err != nil {
+		return err
+	}
+	if !status.Organizations.Accessible {
+		return errors.New("AWS identity is authenticated, but AWS Organizations is not accessible")
+	}
+	return nil
+}
+
+func getAWSAuthStatus(
+	ctx context.Context,
+	credentials aws.Credentials,
+	stsClient stsClient,
+	organizationsClient authStatusOrganizationsClient,
+) (awsAuthStatus, error) {
+	identity, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return awsAuthStatus{}, fmt.Errorf("get AWS caller identity: %w", err)
+	}
+	if identity == nil || aws.ToString(identity.Account) == "" || aws.ToString(identity.Arn) == "" || aws.ToString(identity.UserId) == "" {
+		return awsAuthStatus{}, errors.New("AWS returned an incomplete caller identity")
+	}
+
+	status := awsAuthStatus{
+		Authenticated: true,
+		Identity: awsAuthIdentity{
+			AccountID: aws.ToString(identity.Account),
+			ARN:       aws.ToString(identity.Arn),
+			UserID:    aws.ToString(identity.UserId),
+		},
+		Credentials: awsAuthCredentials{
+			Source:    credentials.Source,
+			CanExpire: credentials.CanExpire,
+		},
+	}
+	if credentials.CanExpire {
+		status.Credentials.ExpiresAt = credentials.Expires.UTC().Format(time.RFC3339)
+	}
+
+	organization, organizationsErr := organizationsClient.DescribeOrganization(
+		ctx,
+		&organizations.DescribeOrganizationInput{},
+	)
+	if organizationsErr != nil {
+		status.Organizations.Error = organizationsErr.Error()
+		return status, nil
+	}
+	if organization == nil || organization.Organization == nil {
+		return awsAuthStatus{}, errors.New("AWS returned no organization details")
+	}
+	status.OK = true
+	status.Organizations.Accessible = true
+	status.Organizations.OrganizationID = aws.ToString(organization.Organization.Id)
+	status.Organizations.ManagementAccountID = aws.ToString(organization.Organization.MasterAccountId)
+	return status, nil
+}
+
+func writeAWSAuthStatus(writer io.Writer, status awsAuthStatus, outputFormat outputFormat) error {
+	if outputFormat == text {
+		if err := writeOutput(writer, "AWS credentials: valid\n"); err != nil {
+			return err
+		}
+		if err := writeOutput(writer, "Identity: %s\nAccount: %s\nCredential source: %s\n", status.Identity.ARN, status.Identity.AccountID, status.Credentials.Source); err != nil {
+			return err
+		}
+		if status.Credentials.CanExpire {
+			if err := writeOutput(writer, "Expires: %s\n", status.Credentials.ExpiresAt); err != nil {
+				return err
+			}
+		}
+		if status.Organizations.Accessible {
+			return writeOutput(writer, "AWS Organizations: accessible\nOrganization: %s\nManagement account: %s\n", status.Organizations.OrganizationID, status.Organizations.ManagementAccountID)
+		}
+		return writeOutput(writer, "AWS Organizations: not accessible\nError: %s\n", status.Organizations.Error)
+	}
+
+	encoder := encodingjson.NewEncoder(writer)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(status); err != nil {
+		return fmt.Errorf("encode AWS authentication status as JSON: %w", err)
+	}
+	return nil
 }
 
 type awsConfigLoader func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error)
