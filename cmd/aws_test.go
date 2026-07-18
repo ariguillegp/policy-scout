@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
 )
@@ -149,6 +150,14 @@ func TestOutputFormatSupportsTextAndJSONOnly(t *testing.T) {
 }
 
 func TestCommandContractIsAutomationFriendly(t *testing.T) {
+	profileFlag := awsCmd.PersistentFlags().Lookup("profile")
+	if profileFlag == nil {
+		t.Fatal("profile flag is not registered as a persistent AWS flag")
+	}
+	if profileFlag.DefValue != "" {
+		t.Fatalf("profile default is %q, want empty", profileFlag.DefValue)
+	}
+
 	outputFlag := awsCmd.Flags().Lookup("output-format")
 	if outputFlag == nil {
 		t.Fatal("output format flag is not registered")
@@ -161,7 +170,7 @@ func TestCommandContractIsAutomationFriendly(t *testing.T) {
 		t.Fatal("expected positional arguments to be rejected")
 	}
 
-	err := describeAccount(context.Background(), &bytes.Buffer{}, "invalid")
+	err := describeAccount(context.Background(), &bytes.Buffer{}, "invalid", "")
 	if err == nil || !strings.Contains(err.Error(), `invalid --account-id "invalid"`) {
 		t.Fatalf("unexpected account validation error: %v", err)
 	}
@@ -177,6 +186,9 @@ func TestCommandContractIsAutomationFriendly(t *testing.T) {
 		`or "all"`,
 		"JSON output is used by default",
 		"AWS SDK default",
+		"--profile security-audit",
+		"overrides AWS_PROFILE",
+		"credential chain are unchanged",
 		"policy-scout aws --account-id 123456789012",
 	} {
 		if !strings.Contains(help.String(), expected) {
@@ -201,6 +213,43 @@ func TestCommandContractIsAutomationFriendly(t *testing.T) {
 
 	if !rootCmd.SilenceUsage {
 		t.Fatal("runtime errors must not be followed by usage output")
+	}
+}
+
+func TestLoadAWSConfigWithExplicitProfile(t *testing.T) {
+	t.Parallel()
+
+	loader := func(_ context.Context, options ...func(*config.LoadOptions) error) (aws.Config, error) {
+		if len(options) != 1 {
+			t.Fatalf("got %d load options, want 1", len(options))
+		}
+		loadOptions := config.LoadOptions{}
+		if err := options[0](&loadOptions); err != nil {
+			t.Fatalf("apply load option: %v", err)
+		}
+		if loadOptions.SharedConfigProfile != "security-audit" {
+			t.Fatalf("shared config profile is %q, want security-audit", loadOptions.SharedConfigProfile)
+		}
+		return aws.Config{}, nil
+	}
+
+	if _, err := loadAWSConfig(context.Background(), "security-audit", loader); err != nil {
+		t.Fatalf("load AWS config: %v", err)
+	}
+}
+
+func TestLoadAWSConfigWithoutProfileUsesDefaultChain(t *testing.T) {
+	t.Parallel()
+
+	loader := func(_ context.Context, options ...func(*config.LoadOptions) error) (aws.Config, error) {
+		if len(options) != 0 {
+			t.Fatalf("got %d load options, want none", len(options))
+		}
+		return aws.Config{}, nil
+	}
+
+	if _, err := loadAWSConfig(context.Background(), "", loader); err != nil {
+		t.Fatalf("load AWS config: %v", err)
 	}
 }
 

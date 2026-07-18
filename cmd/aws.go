@@ -73,7 +73,8 @@ type organizationsClient interface {
 var (
 	accountID string
 	format    outputFormat = json
-	awsCmd                 = &cobra.Command{
+	profile   string
+	awsCmd    = &cobra.Command{
 		Use:   "aws --account-id <12-digit-id|all>",
 		Short: "Show AWS organization paths and effective SCPs",
 		Long: `Show the AWS Organizations hierarchy and the inherited and directly
@@ -81,21 +82,27 @@ attached service control policies (SCPs) for one account or the entire
 organization. JSON output is used by default.
 
 Credentials and region configuration are loaded from the AWS SDK default
-configuration chain. The selected identity needs read access to AWS
-Organizations. This command does not prompt for input.`,
+configuration chain. Use --profile to select a named AWS shared-config profile;
+it takes precedence over AWS_PROFILE for profile selection. When omitted, the
+SDK's default profile selection and credential chain are unchanged. The selected
+identity needs read access to AWS Organizations. This command does not prompt
+for input.`,
 		Example: `  policy-scout aws --account-id 123456789012
+  policy-scout aws --profile security-audit --account-id 123456789012
   policy-scout aws --account-id 123456789012 --output-format json
   policy-scout aws --account-id all --output-format json > organization.json
   policy-scout aws --account-id all --output-format text`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return describeAccount(cmd.Context(), cmd.OutOrStdout(), accountID)
+			return describeAccount(cmd.Context(), cmd.OutOrStdout(), accountID, profile)
 		},
 	}
 )
 
 func init() {
 	rootCmd.AddCommand(awsCmd)
+
+	awsCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS shared-config profile to use (overrides AWS_PROFILE)")
 
 	awsCmd.Flags().StringVar(&accountID, "account-id", "", `AWS account ID to inspect (exactly 12 digits), or "all" for the entire organization`)
 	awsCmd.MarkFlagRequired("account-id") //nolint:gosec,errcheck
@@ -106,13 +113,22 @@ func init() {
 	}
 }
 
+type awsConfigLoader func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error)
+
+func loadAWSConfig(ctx context.Context, selectedProfile string, loader awsConfigLoader) (aws.Config, error) {
+	if selectedProfile != "" {
+		return loader(ctx, config.WithSharedConfigProfile(selectedProfile))
+	}
+	return loader(ctx)
+}
+
 // describeAccount computes the information requested from the target AWS account.
-func describeAccount(ctx context.Context, writer io.Writer, targetAccountID string) error {
+func describeAccount(ctx context.Context, writer io.Writer, targetAccountID, selectedProfile string) error {
 	if err := validateAccountID(targetAccountID); err != nil {
 		return fmt.Errorf("invalid --account-id %q: must be \"all\" or exactly 12 decimal digits", targetAccountID)
 	}
 
-	cfg, err := config.LoadDefaultConfig(ctx)
+	cfg, err := loadAWSConfig(ctx, selectedProfile, config.LoadDefaultConfig)
 	if err != nil {
 		return fmt.Errorf(
 			"load AWS configuration from the default credential chain; check the selected AWS profile, region, and credentials: %w",

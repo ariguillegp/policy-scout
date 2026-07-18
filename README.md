@@ -22,7 +22,7 @@ Explore AWS Organizations service control policies (SCPs) from a terminal. Polic
 
 ## Prerequisites
 
-Policy Scout uses the [AWS SDK default configuration and credential chain](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html). Configure credentials before running it; for example, select an existing profile with `AWS_PROFILE`. Policy Scout itself never prompts, but an external credential provider may require you to authenticate before a non-interactive run.
+Policy Scout uses the [AWS SDK default configuration and credential chain](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html). Configure credentials before running it. Pass `--profile <name>` to select an AWS shared-config profile explicitly; this selection takes precedence over `AWS_PROFILE`. When `--profile` is omitted, the SDK's normal profile selection and default credential chain are unchanged. Policy Scout itself never prompts, but an external credential provider may require you to authenticate before a non-interactive run.
 
 The selected AWS identity must be able to inspect the organization. Depending on the requested scope, Policy Scout calls:
 
@@ -40,6 +40,12 @@ Inspect one account (JSON is the default):
 
 ```bash
 policy-scout aws --account-id 339712974046
+```
+
+Select a named AWS shared-config profile explicitly:
+
+```bash
+policy-scout aws --profile security-audit --account-id 339712974046
 ```
 
 Inspect the entire organization and save structured output:
