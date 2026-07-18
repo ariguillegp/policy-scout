@@ -1,93 +1,138 @@
 # policy-scout
-Explore your cloud security policies (SCPs and Org Policies) quickly from your terminal. The goal is to shorten the debugging lifecycle and quickly understand what policies are applied to what resources within your Cloud Service Provider (CSP). The alternative is to either explore the respective cloud console or run a few commands using the cli (aws, gcloud) and then arranging the results in a useful way to understand what's going on.
+
+Explore AWS Organizations service control policies (SCPs) from a terminal. Policy Scout shows where an account sits in the organization and which SCPs it inherits, without requiring several AWS CLI calls or manual console navigation.
 
 ## Table of Contents
+
 - [Features](#features)
+- [Prerequisites](#prerequisites)
 - [Usage](#usage)
-- [Example](#example)
+- [Automation and agent usage](#automation-and-agent-usage)
+- [Output](#output)
 - [Tooling](#tooling)
 - [License](#license)
 - [Feedback](#feedback)
 
 ## Features
-* AWS SCPs
-  * Given an account ID, displays its location within the AWS organization (path from the root node). The account ID value can be `all` (case insensitive) which will display the entire org tree.
-  * Given a member account ID, displays all inherited and directly attached SCPs. If the entire org tree is displayed (`account-id == all`), each member account will show its SCPs.
-  * Shows which account is the management account and notes that SCPs are not enforced there.
-  * Supports `text`, which displays a tree in your preferred terminal, and structured `json` output.
 
-* GCP Org Policies
-  * Coming soon ...
+- Display one account's path from the organization root, or the complete tree with `--account-id all`.
+- Display directly attached and inherited SCPs for every returned member account.
+- Identify the management account, where SCPs are not enforced.
+- Produce structured `json` (default) or a human-readable `text` tree.
+
+## Prerequisites
+
+Policy Scout uses the [AWS SDK default configuration and credential chain](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html). Configure credentials before running it; for example, select an existing profile with `AWS_PROFILE`. Policy Scout itself never prompts, but an external credential provider may require you to authenticate before a non-interactive run.
+
+The selected AWS identity must be able to inspect the organization. Depending on the requested scope, Policy Scout calls:
+
+- `organizations:ListRoots`
+- `organizations:DescribeOrganization`
+- `organizations:DescribeAccount`
+- `organizations:DescribeOrganizationalUnit`
+- `organizations:ListParents`
+- `organizations:ListPoliciesForTarget`
+- `organizations:ListChildren` when using `--account-id all`
 
 ## Usage
-The intended audience of this tool are security practitioners who need to help their clients understand the effect of security policies on their respective cloud accounts. With that in mind, this tool will provide not only the location of the target resource (e.g. AWS account) in the organization, but all the policies applied to it. The easiest way to make sure you have proper access to run this tool is to run it from the organization's management account. Further IAM configurations for more restrictive access will be left to the user at this moment.
 
-```
-$ policy-scout
-Explore policies within your org from a single interface
+Inspect one account (JSON is the default):
 
-Usage:
-  policy-scout [command]
-
-Available Commands:
-  aws         Entrypoint for all AWS interactions
-  completion  Generate the autocompletion script for the specified shell
-  help        Help about any command
-
-Flags:
-  -h, --help     help for policy-scout
-  -t, --toggle   Help message for toggle
-
-Use "policy-scout [command] --help" for more information about a command.
-...
-$ policy-scout aws
-Error: required flag(s) "account-id", "output-format" not set
-Usage:
-  policy-scout aws [flags]
-
-Flags:
-      --account-id string            aws account ID that will be analyzed
-  -h, --help                         help for aws
-  -o, --output-format outputFormat   valid output formats are: "text", "json"
+```bash
+policy-scout aws --account-id 339712974046
 ```
 
-## Example
-1. **Path from root node**
+Inspect the entire organization and save structured output:
+
+```bash
+policy-scout aws --account-id all --output-format json > organization.json
 ```
-$ policy-scout aws --account-id 339712974046 --output-format text
+
+Request a terminal-friendly tree:
+
+```bash
+policy-scout aws --account-id 339712974046 --output-format text
+policy-scout aws --account-id all --output-format text
+```
+
+Run `policy-scout aws --help` for complete, copyable command examples and input requirements.
+
+## Automation and agent usage
+
+Policy Scout is non-interactive and is designed to be safe to invoke from scripts and coding agents such as Amp, Claude Code, and Codex:
+
+1. Run `policy-scout aws --help` to discover the supported operation and flags.
+2. Ensure AWS credentials are already available through the default credential chain.
+3. Use `--output-format json` explicitly in automation, even though JSON is the default.
+4. Check the exit status before parsing stdout. Exit status `0` means stdout contains one JSON document; a nonzero status means the operation failed and stderr contains a plain-text diagnostic.
+
+The CLI does not use confirmation prompts, interactive input, a pager, or colored output. Successful data is written to stdout and errors are written to stderr, so redirection and JSON processors work predictably:
+
+```bash
+if policy-scout aws --account-id all --output-format json > organization.json; then
+  jq '.. | objects | select(.type? == "account")' organization.json
+fi
+```
+
+## Output
+
+JSON output is a tree rooted at the AWS organization root. Nodes use these fields:
+
+- `type`: `root`, `organizational_unit`, or `account`.
+- `id`: the AWS entity ID.
+- `name`: the entity name, when applicable.
+- `management_account`: `true` for the management account.
+- `scps`: sorted, de-duplicated effective SCP names for a member account.
+- `children`: nested organization nodes.
+
+Fields that do not apply or contain no values may be omitted. The successful JSON document is not wrapped in a status envelope.
+
+```json
+{
+  "type": "root",
+  "id": "r-cww9",
+  "children": [
+    {
+      "type": "organizational_unit",
+      "id": "ou-cww9-x2atbcle",
+      "name": "Finance",
+      "children": [
+        {
+          "type": "account",
+          "id": "339712974046",
+          "name": "aws-child1",
+          "scps": ["DenyAccessS3", "FullAWSAccess"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Text output renders the same hierarchy as a tree:
+
+```text
 |-- Root: [r-cww9]
     |-- OU: Prod [ou-cww9-36h7ub42]
         |-- OU: Finance [ou-cww9-x2atbcle]
             |-- Account: aws-child1 [339712974046] (SCPs: DenyAccessS3, FullAWSAccess)
 ```
-1. **Entire org tree**
-```
-$ policy-scout aws --account-id all --output-format text
-|-- Root: [r-cww9]
-    |-- Account: aws-master (Management Account) [975050287149] (SCPs: not enforced)
-    |-- OU: Test [ou-cww9-avlqk41w]
-        |-- OU: Product B [ou-cww9-d7yzz1lw]
-        |-- OU: Product A [ou-cww9-jilcr7kd]
-    |-- OU: Prod [ou-cww9-36h7ub42]
-        |-- OU: HR [ou-cww9-31itin1k]
-        |-- OU: Finance [ou-cww9-x2atbcle]
-            |-- Account: aws-child1 [339712974046] (SCPs: FullAWSAccess, DenyAccessS3)
-    |-- OU: Dev [ou-cww9-iwb7qdvl]
-        |-- Account: aws-child2 [851725398007] (SCPs: FullAWSAccess)
-```
 
 ## Tooling
+
 - [Mise](https://mise.jdx.dev/) pins the development tools used locally and in CI. Run `mise install` after cloning the repository, then use the Make targets for local workflows.
 - [Cobra CLI](https://cobra.dev/)
 - [GolangCI-Lint](https://golangci-lint.run/)
 - [Goreleaser](https://goreleaser.com/)
 - [go-semantic-release](https://github.com/go-semantic-release/semantic-release)
-- [Github Workflows](https://docs.github.com/en/actions/using-workflows)
+- [GitHub Workflows](https://docs.github.com/en/actions/using-workflows)
 - [Pre-Commit](https://pre-commit.com/)
-- [Editorconfig](https://editorconfig.org/)
+- [EditorConfig](https://editorconfig.org/)
 
 ## License
-Policy-scout is released under the Apache 2.0 license. See [LICENSE](./LICENSE).
+
+Policy Scout is released under the Apache 2.0 license. See [LICENSE](./LICENSE).
 
 ## Feedback
-Feel free to [open an issue](https://github.com/ariguillegp/policy-scout/issues/new) to report a bug or submit a feature request. PRs are also welcomed!
+
+Feel free to [open an issue](https://github.com/ariguillegp/policy-scout/issues/new) to report a bug or submit a feature request. PRs are also welcome!

@@ -148,6 +148,62 @@ func TestOutputFormatSupportsTextAndJSONOnly(t *testing.T) {
 	}
 }
 
+func TestCommandContractIsAutomationFriendly(t *testing.T) {
+	outputFlag := awsCmd.Flags().Lookup("output-format")
+	if outputFlag == nil {
+		t.Fatal("output format flag is not registered")
+	}
+	if outputFlag.DefValue != "json" {
+		t.Fatalf("output format default is %q, want json", outputFlag.DefValue)
+	}
+
+	if err := awsCmd.Args(awsCmd, []string{"unexpected"}); err == nil {
+		t.Fatal("expected positional arguments to be rejected")
+	}
+
+	err := describeAccount(context.Background(), &bytes.Buffer{}, "invalid")
+	if err == nil || !strings.Contains(err.Error(), `invalid --account-id "invalid"`) {
+		t.Fatalf("unexpected account validation error: %v", err)
+	}
+
+	var help bytes.Buffer
+	awsCmd.SetOut(&help)
+	defer awsCmd.SetOut(nil)
+	if err := awsCmd.Help(); err != nil {
+		t.Fatalf("render AWS help: %v", err)
+	}
+	for _, expected := range []string{
+		"exactly 12 digits",
+		`or "all"`,
+		"JSON output is used by default",
+		"AWS SDK default",
+		"policy-scout aws --account-id 123456789012",
+	} {
+		if !strings.Contains(help.String(), expected) {
+			t.Errorf("AWS help does not contain %q:\n%s", expected, help.String())
+		}
+	}
+
+	help.Reset()
+	rootCmd.SetOut(&help)
+	defer rootCmd.SetOut(nil)
+	if err := rootCmd.Help(); err != nil {
+		t.Fatalf("render root help: %v", err)
+	}
+	if !strings.Contains(help.String(), "aws") {
+		t.Errorf("root help does not advertise AWS:\n%s", help.String())
+	}
+	for _, hidden := range []string{"gcp", "toggle"} {
+		if strings.Contains(help.String(), hidden) {
+			t.Errorf("root help unexpectedly advertises %q:\n%s", hidden, help.String())
+		}
+	}
+
+	if !rootCmd.SilenceUsage {
+		t.Fatal("runtime errors must not be followed by usage output")
+	}
+}
+
 func TestListChildrenPaginates(t *testing.T) {
 	t.Parallel()
 

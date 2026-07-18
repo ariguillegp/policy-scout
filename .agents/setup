@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v mise >/dev/null 2>&1; then
+  echo "Installing mise..."
+  curl --fail --location --silent --show-error https://mise.run | sh
+fi
+
+echo "Installing the repository's pinned tools..."
+mise install --locked
+
+echo "Downloading Go modules..."
+./scripts/mise-exec.sh go mod download

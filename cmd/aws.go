@@ -40,7 +40,7 @@ func (e *outputFormat) String() string {
 // Set must have pointer receiver so it doesn't change the value of a copy.
 func (e *outputFormat) Set(value string) error {
 	switch value {
-	case "text", "json":
+	case string(text), string(json):
 		*e = outputFormat(value)
 		return nil
 	default:
@@ -72,10 +72,22 @@ type organizationsClient interface {
 
 var (
 	accountID string
-	format    outputFormat
-	awsCmd    = &cobra.Command{
-		Use:   "aws",
-		Short: "Entrypoint for all AWS interactions",
+	format    outputFormat = json
+	awsCmd                 = &cobra.Command{
+		Use:   "aws --account-id <12-digit-id|all>",
+		Short: "Show AWS organization paths and effective SCPs",
+		Long: `Show the AWS Organizations hierarchy and the inherited and directly
+attached service control policies (SCPs) for one account or the entire
+organization. JSON output is used by default.
+
+Credentials and region configuration are loaded from the AWS SDK default
+configuration chain. The selected identity needs read access to AWS
+Organizations. This command does not prompt for input.`,
+		Example: `  policy-scout aws --account-id 123456789012
+  policy-scout aws --account-id 123456789012 --output-format json
+  policy-scout aws --account-id all --output-format json > organization.json
+  policy-scout aws --account-id all --output-format text`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return describeAccount(cmd.Context(), cmd.OutOrStdout(), accountID)
 		},
@@ -85,22 +97,27 @@ var (
 func init() {
 	rootCmd.AddCommand(awsCmd)
 
-	awsCmd.Flags().StringVar(&accountID, "account-id", "", "aws account ID that will be analyzed")
+	awsCmd.Flags().StringVar(&accountID, "account-id", "", `AWS account ID to inspect (exactly 12 digits), or "all" for the entire organization`)
 	awsCmd.MarkFlagRequired("account-id") //nolint:gosec,errcheck
 
-	awsCmd.Flags().VarP(&format, "output-format", "o", `valid output formats are: "text", "json"`)
-	awsCmd.MarkFlagRequired("output-format") //nolint:gosec,errcheck
+	awsCmd.Flags().VarP(&format, "output-format", "o", `output format: "json" or "text"`)
+	if err := awsCmd.RegisterFlagCompletionFunc("output-format", outputFormatCompletion); err != nil {
+		panic(err)
+	}
 }
 
 // describeAccount computes the information requested from the target AWS account.
 func describeAccount(ctx context.Context, writer io.Writer, targetAccountID string) error {
 	if err := validateAccountID(targetAccountID); err != nil {
-		return err
+		return fmt.Errorf("invalid --account-id %q: must be \"all\" or exactly 12 decimal digits", targetAccountID)
 	}
 
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
-		return fmt.Errorf("load AWS configuration: %w", err)
+		return fmt.Errorf(
+			"load AWS configuration from the default credential chain; check the selected AWS profile, region, and credentials: %w",
+			err,
+		)
 	}
 	client := organizations.NewFromConfig(cfg)
 
