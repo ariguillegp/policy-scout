@@ -348,7 +348,7 @@ func printAccount(
 	if accountID == managementAccountID {
 		return writeOutput(
 			writer,
-			"%s|-- Account: %s (Management Account) [%s] (SCPs: not enforced for management account)\n",
+			"%s|-- Account: %s (Management Account) [%s] (SCPs: not enforced)\n",
 			prefix,
 			accountName,
 			accountID,

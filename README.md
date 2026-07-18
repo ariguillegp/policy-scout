@@ -64,7 +64,7 @@ $ policy-scout aws --account-id 339712974046 --output-format text
 ```
 $ policy-scout aws --account-id all --output-format text
 |-- Root: [r-cww9]
-    |-- Account: aws-master (Management Account) [975050287149] (SCPs: not enforced for management account)
+    |-- Account: aws-master (Management Account) [975050287149] (SCPs: not enforced)
     |-- OU: Test [ou-cww9-avlqk41w]
         |-- OU: Product B [ou-cww9-d7yzz1lw]
         |-- OU: Product A [ou-cww9-jilcr7kd]

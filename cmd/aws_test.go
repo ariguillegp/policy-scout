@@ -497,8 +497,9 @@ func TestManagementAccountDoesNotListSCPs(t *testing.T) {
 	if policyCalls != 0 {
 		t.Fatalf("policy API called %d times", policyCalls)
 	}
-	if !strings.Contains(output.String(), "SCPs: not enforced for management account") {
-		t.Fatalf("unexpected output: %s", output.String())
+	want := "|-- Account: Management (Management Account) [123456789012] (SCPs: not enforced)\n"
+	if output.String() != want {
+		t.Fatalf("unexpected output: %s, want: %s", output.String(), want)
 	}
 }
 
@@ -581,7 +582,7 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 		t.Fatalf("shared ancestor policy calls: root=%d OU=%d, want 1 each", policyCalls[rootID], policyCalls[ouID])
 	}
 	want := "|-- Root: [r-root]\n" +
-		"    |-- Account: Management (Management Account) [111111111111] (SCPs: not enforced for management account)\n" +
+		"    |-- Account: Management (Management Account) [111111111111] (SCPs: not enforced)\n" +
 		"    |-- OU: Production [ou-root-12345678]\n" +
 		"        |-- Account: Member [222222222222] (SCPs: )\n" +
 		"        |-- Account: Member [333333333333] (SCPs: )\n"
