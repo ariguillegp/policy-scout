@@ -1,5 +1,7 @@
 [tools]
 go = "1.24.13"
+"go:github.com/go-semantic-release/semantic-release/v2/cmd/semantic-release" = "2.31.0"
 gofumpt = "0.7.0"
 golangci-lint = "1.64.2"
+goreleaser = "2.17.0"
 pre-commit = "3.6.0"

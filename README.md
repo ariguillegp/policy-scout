@@ -77,10 +77,11 @@ $ policy-scout aws --account-id all --output-format text
 ```
 
 ## Tooling
-- [Mise](https://mise.jdx.dev/) pins the development tools used locally and in CI. Run `mise install` after cloning the repository.
+- [Mise](https://mise.jdx.dev/) pins the development tools used locally and in CI. Run `mise install` after cloning the repository, then use the Make targets for local workflows.
 - [Cobra CLI](https://cobra.dev/)
 - [GolangCI-Lint](https://golangci-lint.run/)
 - [Goreleaser](https://goreleaser.com/)
+- [go-semantic-release](https://github.com/go-semantic-release/semantic-release)
 - [Github Workflows](https://docs.github.com/en/actions/using-workflows)
 - [Pre-Commit](https://pre-commit.com/)
 - [Editorconfig](https://editorconfig.org/)
