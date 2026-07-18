@@ -7,6 +7,7 @@ package cmd
 
 import (
 	"context"
+	encodingjson "encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,7 +30,6 @@ type outputFormat string
 const (
 	text outputFormat = "text" //nolint:unused
 	json outputFormat = "json" //nolint:unused
-	dot  outputFormat = "dot"  //nolint:unused
 )
 
 // String is used both by fmt.Print and by Cobra in help text.
@@ -40,11 +40,11 @@ func (e *outputFormat) String() string {
 // Set must have pointer receiver so it doesn't change the value of a copy.
 func (e *outputFormat) Set(value string) error {
 	switch value {
-	case "text", "json", "dot":
+	case "text", "json":
 		*e = outputFormat(value)
 		return nil
 	default:
-		return errors.New(`must be one of "text", "json", or "dot"`)
+		return errors.New(`must be one of "text" or "json"`)
 	}
 }
 
@@ -57,7 +57,6 @@ func outputFormatCompletion(cmd *cobra.Command, args []string, toComplete string
 	return []string{
 		"text\tdisplays results as a text based tree in your terminal",
 		"json\tdisplays results formatted in json",
-		"dot\tgenerates a dot file with the results",
 	}, cobra.ShellCompDirectiveDefault
 }
 
@@ -89,7 +88,7 @@ func init() {
 	awsCmd.Flags().StringVar(&accountID, "account-id", "", "aws account ID that will be analyzed")
 	awsCmd.MarkFlagRequired("account-id") //nolint:gosec,errcheck
 
-	awsCmd.Flags().VarP(&format, "output-format", "o", `valid output formats are: "text", "json", "dot"`)
+	awsCmd.Flags().VarP(&format, "output-format", "o", `valid output formats are: "text", "json"`)
 	awsCmd.MarkFlagRequired("output-format") //nolint:gosec,errcheck
 }
 
@@ -110,28 +109,219 @@ func describeAccount(ctx context.Context, writer io.Writer, targetAccountID stri
 		return fmt.Errorf("get organization root ID: %w", err)
 	}
 
+	managementAccountID, err := getManagementAccountID(ctx, client)
+	if err != nil {
+		return err
+	}
+
 	switch format {
-	case "dot":
-		return displayOrganizationTreeDot(writer)
 	case "json":
-		return displayOrganizationTreeJSON(writer)
+		return displayOrganizationTreeJSON(ctx, writer, client, targetAccountID, rootID, managementAccountID)
 	default:
-		managementAccountID, err := getManagementAccountID(ctx, client)
-		if err != nil {
-			return err
-		}
 		return displayOrganizationTreeText(ctx, writer, client, targetAccountID, rootID, managementAccountID)
 	}
 }
 
-// TODO. JSON Output implementation.
-func displayOrganizationTreeJSON(writer io.Writer) error {
-	return writeOutput(writer, "JSON Output\n")
+type organizationJSONNode struct {
+	Type              string                 `json:"type"`
+	ID                string                 `json:"id"`
+	Name              string                 `json:"name,omitempty"`
+	ManagementAccount bool                   `json:"management_account,omitempty"`
+	SCPs              []string               `json:"scps,omitempty"`
+	Children          []organizationJSONNode `json:"children,omitempty"`
 }
 
-// TODO. Dot (graphviz) Output implementation.
-func displayOrganizationTreeDot(writer io.Writer) error {
-	return writeOutput(writer, "Dot Output\n")
+func displayOrganizationTreeJSON(
+	ctx context.Context,
+	writer io.Writer,
+	client organizationsClient,
+	targetAccountID, rootID, managementAccountID string,
+) error {
+	root := organizationJSONNode{Type: "root", ID: rootID}
+	policyCache := map[string][]types.PolicySummary{}
+
+	var err error
+	if strings.EqualFold(targetAccountID, "all") {
+		root.Children, err = buildOrganizationJSONChildren(
+			ctx,
+			client,
+			rootID,
+			managementAccountID,
+			[]string{rootID},
+			map[string]bool{},
+			map[string]bool{},
+			policyCache,
+		)
+	} else {
+		root.Children, err = buildAccountPathJSON(ctx, client, targetAccountID, rootID, managementAccountID, policyCache)
+	}
+	if err != nil {
+		return err
+	}
+
+	encoder := encodingjson.NewEncoder(writer)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(root); err != nil {
+		return fmt.Errorf("encode organization as JSON: %w", err)
+	}
+	return nil
+}
+
+func buildAccountPathJSON(
+	ctx context.Context,
+	client organizationsClient,
+	targetAccountID, rootID, managementAccountID string,
+	policyCache map[string][]types.PolicySummary,
+) ([]organizationJSONNode, error) {
+	account, err := getAccount(ctx, client, targetAccountID)
+	if err != nil {
+		return nil, fmt.Errorf("describe account %s: %w", targetAccountID, err)
+	}
+
+	path := []string{targetAccountID}
+	visited := map[string]bool{targetAccountID: true}
+	for childID := targetAccountID; childID != rootID; {
+		parents, err := listParents(ctx, client, childID)
+		if err != nil {
+			return nil, fmt.Errorf("list parents for %s: %w", childID, err)
+		}
+		if len(parents) != 1 {
+			return nil, fmt.Errorf("expected exactly one parent for %s, got %d", childID, len(parents))
+		}
+		parentID := aws.ToString(parents[0].Id)
+		if parents[0].Type == types.ParentTypeRoot && parentID != rootID {
+			return nil, fmt.Errorf("AWS returned root parent %s, expected %s", parentID, rootID)
+		}
+		if visited[parentID] {
+			return nil, fmt.Errorf("cycle detected in organization hierarchy at %s", parentID)
+		}
+		visited[parentID] = true
+		path = append(path, parentID)
+		childID = parentID
+	}
+
+	accountPath := make([]string, len(path))
+	for index := range path {
+		accountPath[len(path)-1-index] = path[index]
+	}
+	accountNode, err := buildAccountJSONNode(
+		ctx, client, targetAccountID, aws.ToString(account.Name), managementAccountID, accountPath, policyCache,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	child := accountNode
+	for index := 1; index < len(accountPath)-1; index++ {
+		ouID := accountPath[len(accountPath)-1-index]
+		ou, err := getOU(ctx, client, ouID)
+		if err != nil {
+			return nil, fmt.Errorf("get organizational unit %s: %w", ouID, err)
+		}
+		child = organizationJSONNode{
+			Type:     "organizational_unit",
+			ID:       ouID,
+			Name:     aws.ToString(ou.Name),
+			Children: []organizationJSONNode{child},
+		}
+	}
+	return []organizationJSONNode{child}, nil
+}
+
+func buildOrganizationJSONChildren(
+	ctx context.Context,
+	client organizationsClient,
+	parentID, managementAccountID string,
+	ancestors []string,
+	completed, active map[string]bool,
+	policyCache map[string][]types.PolicySummary,
+) ([]organizationJSONNode, error) {
+	if active[parentID] {
+		return nil, fmt.Errorf("cycle detected in organization hierarchy at %s", parentID)
+	}
+	active[parentID] = true
+	defer delete(active, parentID)
+
+	var nodes []organizationJSONNode
+	accounts, err := listChildren(ctx, client, parentID, types.ChildTypeAccount)
+	if err != nil {
+		return nil, fmt.Errorf("list accounts for %s: %w", parentID, err)
+	}
+	for _, child := range accounts {
+		accountID := aws.ToString(child.Id)
+		if active[accountID] {
+			return nil, fmt.Errorf("cycle detected in organization hierarchy at %s", accountID)
+		}
+		if completed[accountID] {
+			continue
+		}
+		account, err := getAccount(ctx, client, accountID)
+		if err != nil {
+			return nil, fmt.Errorf("get account %s: %w", accountID, err)
+		}
+		node, err := buildAccountJSONNode(
+			ctx, client, accountID, aws.ToString(account.Name), managementAccountID, appendPath(ancestors, accountID), policyCache,
+		)
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, node)
+		completed[accountID] = true
+	}
+
+	organizationalUnits, err := listChildren(ctx, client, parentID, types.ChildTypeOrganizationalUnit)
+	if err != nil {
+		return nil, fmt.Errorf("list organizational units for %s: %w", parentID, err)
+	}
+	for _, child := range organizationalUnits {
+		ouID := aws.ToString(child.Id)
+		if active[ouID] {
+			return nil, fmt.Errorf("cycle detected in organization hierarchy at %s", ouID)
+		}
+		if completed[ouID] {
+			continue
+		}
+		ou, err := getOU(ctx, client, ouID)
+		if err != nil {
+			return nil, fmt.Errorf("get organizational unit %s: %w", ouID, err)
+		}
+		children, err := buildOrganizationJSONChildren(
+			ctx, client, ouID, managementAccountID, appendPath(ancestors, ouID), completed, active, policyCache,
+		)
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, organizationJSONNode{
+			Type:     "organizational_unit",
+			ID:       ouID,
+			Name:     aws.ToString(ou.Name),
+			Children: children,
+		})
+	}
+
+	completed[parentID] = true
+	return nodes, nil
+}
+
+func buildAccountJSONNode(
+	ctx context.Context,
+	client organizationsClient,
+	accountID, accountName, managementAccountID string,
+	path []string,
+	policyCache map[string][]types.PolicySummary,
+) (organizationJSONNode, error) {
+	node := organizationJSONNode{Type: "account", ID: accountID, Name: accountName}
+	if accountID == managementAccountID {
+		node.ManagementAccount = true
+		return node, nil
+	}
+
+	scpNames, err := listSCPsForPath(ctx, client, path, policyCache)
+	if err != nil {
+		return organizationJSONNode{}, fmt.Errorf("get SCPs for account %s: %w", accountID, err)
+	}
+	node.SCPs = scpNames
+	return node, nil
 }
 
 func writeOutput(writer io.Writer, outputFormat string, values ...any) error {

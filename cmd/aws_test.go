@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	encodingjson "encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -125,6 +126,25 @@ func TestValidateAccountID(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestOutputFormatSupportsTextAndJSONOnly(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{"text", "json"} {
+		var output outputFormat
+		if err := output.Set(value); err != nil {
+			t.Fatalf("set output format %q: %v", value, err)
+		}
+		if output.String() != value {
+			t.Fatalf("got output format %q, want %q", output.String(), value)
+		}
+	}
+
+	var output outputFormat
+	if err := output.Set("dot"); err == nil {
+		t.Fatal("expected dot output format to be rejected")
 	}
 }
 
@@ -588,5 +608,90 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 		"        |-- Account: Member [333333333333] (SCPs: )\n"
 	if output.String() != want {
 		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output.String(), want)
+	}
+
+	output.Reset()
+	err = displayOrganizationTreeJSON(context.Background(), &output, client, "all", rootID, managementAccount)
+	if err != nil {
+		t.Fatalf("display organization as JSON: %v", err)
+	}
+	var result organizationJSONNode
+	if err := encodingjson.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("decode organization JSON: %v", err)
+	}
+	if len(result.Children) != 2 || !result.Children[0].ManagementAccount {
+		t.Fatalf("unexpected root children: %+v", result.Children)
+	}
+	organizationalUnit := result.Children[1]
+	if organizationalUnit.ID != ouID || len(organizationalUnit.Children) != 2 {
+		t.Fatalf("unexpected organizational unit: %+v", organizationalUnit)
+	}
+}
+
+func TestDisplayOrganizationTreeJSONBuildsAccountPath(t *testing.T) {
+	t.Parallel()
+
+	const (
+		rootID    = "r-root"
+		ouID      = "ou-root-12345678"
+		accountID = "123456789012"
+	)
+	client := &fakeOrganizationsClient{
+		describeAccountFn: func(context.Context, *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+			return &organizations.DescribeAccountOutput{Account: &types.Account{
+				Id: aws.String(accountID), Name: aws.String("Application"),
+			}}, nil
+		},
+		describeOrganizationalUnit: func(context.Context, *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error) {
+			return &organizations.DescribeOrganizationalUnitOutput{OrganizationalUnit: &types.OrganizationalUnit{
+				Id: aws.String(ouID), Name: aws.String("Production"),
+			}}, nil
+		},
+		listParentsFn: func(_ context.Context, input *organizations.ListParentsInput) (*organizations.ListParentsOutput, error) {
+			switch aws.ToString(input.ChildId) {
+			case accountID:
+				return &organizations.ListParentsOutput{Parents: []types.Parent{{
+					Id: aws.String(ouID), Type: types.ParentTypeOrganizationalUnit,
+				}}}, nil
+			case ouID:
+				return &organizations.ListParentsOutput{Parents: []types.Parent{{
+					Id: aws.String(rootID), Type: types.ParentTypeRoot,
+				}}}, nil
+			default:
+				return nil, errors.New("unexpected parent lookup")
+			}
+		},
+		listPoliciesForTargetFn: func(_ context.Context, input *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			if aws.ToString(input.TargetId) == accountID {
+				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{{
+					Id: aws.String("p-deny0001"), Name: aws.String("DenyS3"), Type: types.PolicyTypeServiceControlPolicy,
+				}}}, nil
+			}
+			return &organizations.ListPoliciesForTargetOutput{}, nil
+		},
+	}
+
+	var output bytes.Buffer
+	if err := displayOrganizationTreeJSON(
+		context.Background(), &output, client, accountID, rootID, "999999999999",
+	); err != nil {
+		t.Fatalf("display JSON: %v", err)
+	}
+
+	var result organizationJSONNode
+	if err := encodingjson.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("decode JSON: %v", err)
+	}
+	if result.Type != "root" || result.ID != rootID || len(result.Children) != 1 {
+		t.Fatalf("unexpected root: %+v", result)
+	}
+	ou := result.Children[0]
+	if ou.Type != "organizational_unit" || ou.ID != ouID || ou.Name != "Production" || len(ou.Children) != 1 {
+		t.Fatalf("unexpected organizational unit: %+v", ou)
+	}
+	account := ou.Children[0]
+	if account.Type != "account" || account.ID != accountID || account.Name != "Application" ||
+		strings.Join(account.SCPs, ",") != "DenyS3" {
+		t.Fatalf("unexpected account: %+v", account)
 	}
 }
