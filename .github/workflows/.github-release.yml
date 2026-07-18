@@ -38,6 +38,6 @@ jobs:
           cache: true
       - run: mise install --locked
       - run: scripts/mise-exec.sh goreleaser check
-      - run: scripts/mise-exec.sh semantic-release --hooks goreleaser@2.0.0
+      - run: scripts/mise-exec.sh semantic-release --allow-no-changes --hooks goreleaser@2.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
