@@ -12,8 +12,8 @@ Explore your cloud security policies (SCPs and Org Policies) quickly from your t
 ## Features
 * AWS SCPs
   * Given an account ID, displays its location within the AWS organization (path from the root node). The account ID value can be `all` (case insensitive) which will display the entire org tree.
-  * Given an account ID, displays all (inherited and directly attached) the SCPs applied to it. If the entire org tree is displayed (`account-id == all`), each account will show the SCPs applied to them.
-  * Show an indicator of which account is the management account in the org.
+  * Given a member account ID, displays all inherited and directly attached SCPs. If the entire org tree is displayed (`account-id == all`), each member account will show its SCPs.
+  * Shows which account is the management account and notes that SCPs are not enforced there.
   * Initial supported output format will be `text`, which displays a tree in your preferred terminal. Future iterations will include `json` and `dot`.
 
 * GCP Org Policies
@@ -58,13 +58,13 @@ $ policy-scout aws --account-id 339712974046 --output-format text
 |-- Root: [r-cww9]
     |-- OU: Prod [ou-cww9-36h7ub42]
         |-- OU: Finance [ou-cww9-x2atbcle]
-            |-- Account: aws-child1 [339712974046] (SCPs: FullAWSAccess, DenyAccessS3)
+            |-- Account: aws-child1 [339712974046] (SCPs: DenyAccessS3, FullAWSAccess)
 ```
 1. **Entire org tree**
 ```
 $ policy-scout aws --account-id all --output-format text
 |-- Root: [r-cww9]
-    |-- Account: aws-master (Management Account) [975050287149] (SCPs: FullAWSAccess)
+    |-- Account: aws-master (Management Account) [975050287149] (SCPs: not enforced for management account)
     |-- OU: Test [ou-cww9-avlqk41w]
         |-- OU: Product B [ou-cww9-d7yzz1lw]
         |-- OU: Product A [ou-cww9-jilcr7kd]
