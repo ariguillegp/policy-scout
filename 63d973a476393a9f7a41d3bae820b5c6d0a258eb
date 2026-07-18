@@ -1,0 +1,33 @@
+.github/workflows/.github-release.yml
+  d5ef7269514d7554 10-11,13-16,21-22,24-27,34-35,37-41
+mise.toml
+  d5ef7269514d7554 3,6
+.pre-commit-config.yaml
+  d5ef7269514d7554 18,20-29
+README.md
+  d5ef7269514d7554 80,84
+Makefile
+  d5ef7269514d7554 1-6,15-16,22-23,28,33,38,40,45
+.goreleaser.yaml
+  d5ef7269514d7554 1-2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.22",
+  "base_commit_sha": "63d973a476393a9f7a41d3bae820b5c6d0a258eb",
+  "prompts": {
+    "d5ef7269514d7554": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f72b4-97c6-74b2-a9e3-09a5a8bf2519",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Aristides Gonzalez <aristides@glezpol.com>",
+      "messages": [],
+      "total_additions": 51,
+      "total_deletions": 34,
+      "accepted_lines": 51,
+      "overriden_lines": 0
+    }
+  }
+}
