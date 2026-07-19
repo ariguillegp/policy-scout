@@ -37,12 +37,7 @@ var rootCmd = &cobra.Command{
   policy-scout aws --account-id all --output-format text`,
 	SilenceErrors: true,
 	SilenceUsage:  true,
-	Args: func(cmd *cobra.Command, args []string) error {
-		if err := cobra.NoArgs(cmd, args); err != nil {
-			return newInvalidInvocationError(err)
-		}
-		return nil
-	},
+	Args:          noArgsValidator,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return cmd.Help()
 	},

@@ -130,12 +130,7 @@ AWS SSO login. If SSO credentials are missing or expired, run the suggested
   policy-scout aws --account-id 123456789012 --timeout 30s --max-retries 3
   policy-scout aws --account-id all --output-format json > organization.json
   policy-scout aws --account-id all --output-format text`,
-		Args: func(cmd *cobra.Command, args []string) error {
-			if err := cobra.NoArgs(cmd, args); err != nil {
-				return newInvalidInvocationError(err)
-			}
-			return nil
-		},
+		Args: noArgsValidator,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAWSCommand(cmd)
 		},
@@ -157,7 +152,7 @@ entire operation, including configuration and credential loading, and
 		Example: `  policy-scout aws auth status
   policy-scout aws auth status --output-format text
   policy-scout aws auth status --timeout 30s --max-retries 3`,
-		Args: cobra.NoArgs,
+		Args: noArgsValidator,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAWSAuthStatusCommand(cmd)
 		},

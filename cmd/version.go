@@ -24,7 +24,7 @@ var (
 	versionCmd                 = &cobra.Command{
 		Use:   "version",
 		Short: "Print binary and JSON schema versions",
-		Args:  cobra.NoArgs,
+		Args:  noArgsValidator,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return printVersion(cmd.OutOrStdout(), versionFormat)
 		},

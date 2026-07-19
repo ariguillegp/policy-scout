@@ -89,6 +89,16 @@ func newInvalidInvocationError(err error) error {
 	return &commandError{kind: errorKindInvocation, err: err}
 }
 
+// noArgsValidator rejects any positional arguments, classifying the rejection
+// as an invalid invocation so callers observe a stable error code and exit
+// status regardless of which command received the extra arguments.
+func noArgsValidator(cmd *cobra.Command, args []string) error {
+	if err := cobra.NoArgs(cmd, args); err != nil {
+		return newInvalidInvocationError(err)
+	}
+	return nil
+}
+
 func newCredentialsError(operation string, err error) error {
 	return &commandError{kind: errorKindCredentials, operation: operation, err: err}
 }

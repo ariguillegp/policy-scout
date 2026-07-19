@@ -117,9 +117,10 @@ func TestInvalidInvocationsUseStderrAndStableExitStatuses(t *testing.T) {
 			wantCode: "invalid_invocation", wantMessagePart: "extra",
 		},
 		{
-			// Cobra.NoArgs is not wrapped for version, so preserve its current classification.
-			name: "extra version positional argument", args: []string{"version", "extra"}, wantStatus: 1,
-			wantCode: "unexpected", wantMessagePart: "Policy Scout could not complete the request.",
+			// Extra positional arguments to version are classified as invalid_invocation,
+			// matching root, aws, and aws auth status.
+			name: "extra version positional argument", args: []string{"version", "extra"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "unknown",
 		},
 	}
 
