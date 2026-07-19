@@ -1147,13 +1147,17 @@ func printOrganizationAccountNode(writer io.Writer, prefix string, node organiza
 			node.ID,
 		)
 	}
+	scpSummary := strings.Join(node.SCPs, ", ")
+	if scpSummary == "" {
+		scpSummary = "none"
+	}
 	if err := writeOutput(
 		writer,
 		"%s|-- Account: %s [%s] (SCP summary names from account/ancestor attachments: %s)\n",
 		prefix,
 		node.Name,
 		node.ID,
-		strings.Join(node.SCPs, ", "),
+		scpSummary,
 	); err != nil {
 		return err
 	}

@@ -1163,11 +1163,11 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
 `
 	wantText := "|-- Root: [r-root]\n" +
 		"    |-- Account: Account 111111111111 (Management Account) [111111111111] (SCPs do not affect management-account users or roles)\n" +
-		"    |-- Account: Account 222222222222 [222222222222] (SCP summary names from account/ancestor attachments: )\n" +
-		"    |-- Account: Account 333333333333 [333333333333] (SCP summary names from account/ancestor attachments: )\n" +
+		"    |-- Account: Account 222222222222 [222222222222] (SCP summary names from account/ancestor attachments: none)\n" +
+		"    |-- Account: Account 333333333333 [333333333333] (SCP summary names from account/ancestor attachments: none)\n" +
 		"    |-- OU: OU ou-root-aaaa1111 [ou-root-aaaa1111]\n" +
-		"        |-- Account: Account 444444444444 [444444444444] (SCP summary names from account/ancestor attachments: )\n" +
-		"        |-- Account: Account 555555555555 [555555555555] (SCP summary names from account/ancestor attachments: )\n" +
+		"        |-- Account: Account 444444444444 [444444444444] (SCP summary names from account/ancestor attachments: none)\n" +
+		"        |-- Account: Account 555555555555 [555555555555] (SCP summary names from account/ancestor attachments: none)\n" +
 		"        |-- OU: OU ou-root-cccc3333 [ou-root-cccc3333]\n" +
 		"        |-- OU: OU ou-root-dddd4444 [ou-root-dddd4444]\n" +
 		"    |-- OU: OU ou-root-bbbb2222 [ou-root-bbbb2222]\n"
@@ -1738,8 +1738,8 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 	want := "|-- Root: [r-root]\n" +
 		"    |-- Account: Management (Management Account) [111111111111] (SCPs do not affect management-account users or roles)\n" +
 		"    |-- OU: Production [ou-root-12345678]\n" +
-		"        |-- Account: Member [222222222222] (SCP summary names from account/ancestor attachments: )\n" +
-		"        |-- Account: Member [333333333333] (SCP summary names from account/ancestor attachments: )\n"
+		"        |-- Account: Member [222222222222] (SCP summary names from account/ancestor attachments: none)\n" +
+		"        |-- Account: Member [333333333333] (SCP summary names from account/ancestor attachments: none)\n"
 	if output.String() != want {
 		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output.String(), want)
 	}
