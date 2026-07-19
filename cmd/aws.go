@@ -151,12 +151,15 @@ AWS SSO login. If SSO credentials are missing or expired, run the suggested
 the caller with AWS STS, and verify access to AWS Organizations. No secret
 credential values are displayed. This command does not prompt for input or
 start an AWS SSO login. Missing or expired SSO credentials produce a copyable
-login command for an operator to run separately.`,
+login command for an operator to run separately. Use --timeout to bound the
+entire operation, including configuration and credential loading, and
+--max-retries to override retries for each AWS API request.`,
 		Example: `  policy-scout aws auth status
-  policy-scout aws auth status --output-format text`,
+  policy-scout aws auth status --output-format text
+  policy-scout aws auth status --timeout 30s --max-retries 3`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return displayAWSAuthStatus(cmd.Context(), cmd.OutOrStdout(), profile)
+			return runAWSAuthStatusCommand(cmd)
 		},
 	}
 )
@@ -180,6 +183,7 @@ func init() {
 	if err := authStatusCmd.RegisterFlagCompletionFunc("output-format", outputFormatCompletion); err != nil {
 		panic(err)
 	}
+	addAWSExecutionFlags(authStatusCmd)
 }
 
 type awsExecutionControls struct {
@@ -190,7 +194,7 @@ type awsExecutionControls struct {
 }
 
 func addAWSExecutionFlags(cmd *cobra.Command) {
-	cmd.Flags().Duration("timeout", 0, "overall timeout for AWS configuration loading and API traversal (for example, 30s)")
+	cmd.Flags().Duration("timeout", 0, "overall timeout for AWS configuration and credential loading plus API calls (for example, 30s)")
 	cmd.Flags().Int("max-retries", 0, fmt.Sprintf("maximum retries per AWS API request, after the initial attempt (0-%d)", maxAllowedRetries))
 }
 
@@ -275,6 +279,19 @@ func runAWSCommand(cmd *cobra.Command) error {
 	return controls.explainError(err)
 }
 
+func runAWSAuthStatusCommand(cmd *cobra.Command) error {
+	controls, err := awsExecutionControlsFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := controls.context(cmd.Context())
+	defer cancel()
+
+	err = displayAWSAuthStatus(ctx, cmd.OutOrStdout(), profile, controls.configLoadOptions()...)
+	return controls.explainError(err)
+}
+
 type awsAuthStatus struct {
 	OK            bool                       `json:"ok"`
 	Authenticated bool                       `json:"authenticated"`
@@ -302,12 +319,39 @@ type awsOrganizationsAuthStatus struct {
 	Error               string `json:"error,omitempty"`
 }
 
-func displayAWSAuthStatus(ctx context.Context, writer io.Writer, selectedProfile string) (err error) {
+type awsAuthStatusClientFactory func(aws.Config) (stsClient, authStatusOrganizationsClient)
+
+func displayAWSAuthStatus(
+	ctx context.Context,
+	writer io.Writer,
+	selectedProfile string,
+	configOptions ...func(*config.LoadOptions) error,
+) error {
+	return displayAWSAuthStatusWithDependencies(
+		ctx,
+		writer,
+		selectedProfile,
+		config.LoadDefaultConfig,
+		func(cfg aws.Config) (stsClient, authStatusOrganizationsClient) {
+			return sts.NewFromConfig(cfg), organizations.NewFromConfig(cfg)
+		},
+		configOptions...,
+	)
+}
+
+func displayAWSAuthStatusWithDependencies(
+	ctx context.Context,
+	writer io.Writer,
+	selectedProfile string,
+	configLoader awsConfigLoader,
+	clientFactory awsAuthStatusClientFactory,
+	configOptions ...func(*config.LoadOptions) error,
+) (err error) {
 	defer func() {
 		err = addSSORemediation(err, selectedProfile)
 	}()
 
-	cfg, err := loadAWSConfig(ctx, selectedProfile, config.LoadDefaultConfig)
+	cfg, err := loadAWSConfig(ctx, selectedProfile, configLoader, configOptions...)
 	if err != nil {
 		return newCredentialsError("LoadDefaultConfig", err)
 	}
@@ -315,12 +359,13 @@ func displayAWSAuthStatus(ctx context.Context, writer io.Writer, selectedProfile
 	if err != nil {
 		return newCredentialsError("RetrieveCredentials", err)
 	}
+	stsClient, organizationsClient := clientFactory(cfg)
 
 	status, err := getAWSAuthStatus(
 		ctx,
 		credentials,
-		sts.NewFromConfig(cfg),
-		organizations.NewFromConfig(cfg),
+		stsClient,
+		organizationsClient,
 	)
 	if err != nil {
 		return err
@@ -369,6 +414,12 @@ func getAWSAuthStatus(
 		&organizations.DescribeOrganizationInput{},
 	)
 	if organizationsErr != nil {
+		var maxAttemptsError *awsretry.MaxAttemptsError
+		if errors.Is(organizationsErr, context.Canceled) ||
+			errors.Is(organizationsErr, context.DeadlineExceeded) ||
+			errors.As(organizationsErr, &maxAttemptsError) {
+			return awsAuthStatus{}, fmt.Errorf("describe AWS organization: %w", organizationsErr)
+		}
 		status.Organizations.Error = organizationsErr.Error()
 		return status, nil
 	}

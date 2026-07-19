@@ -92,6 +92,7 @@ can access AWS Organizations:
 ```bash
 policy-scout aws auth status
 policy-scout aws auth status --output-format text
+policy-scout aws auth status --timeout 30s --max-retries 3
 ```
 
 The status command calls AWS STS `GetCallerIdentity` and Organizations
@@ -99,6 +100,10 @@ The status command calls AWS STS `GetCallerIdentity` and Organizations
 available, but never displays secret credential values. A successful identity
 check with denied Organizations access is reported in the output and returns a
 nonzero exit status.
+
+The AWS execution controls described below also apply to `aws auth status`.
+Its timeout covers configuration and credential retrieval plus both the STS
+and Organizations calls, and its retry limit applies to each API request.
 
 Inspect one account (JSON is the default):
 
@@ -131,7 +136,7 @@ Bound AWS work for a CI job or coding agent:
 policy-scout aws --account-id all --output-format json --timeout 30s --max-retries 3
 ```
 
-- `--timeout <duration>` sets one overall deadline for AWS configuration and credential loading plus all Organizations API traversal. Durations use Go syntax such as `500ms`, `30s`, or `2m`. The value must be greater than zero.
+- `--timeout <duration>` sets one overall deadline for AWS configuration and credential loading plus all STS and Organizations API work performed by the selected command. Durations use Go syntax such as `500ms`, `30s`, or `2m`. The value must be greater than zero.
 - `--max-retries <count>` limits each AWS API request to that many retries after its initial attempt. `0` disables retries; accepted values are `0` through `10`. Retryability and backoff remain managed by the AWS SDK.
 - When either flag is omitted, Policy Scout does not override that setting. In particular, omitting `--max-retries` preserves the AWS SDK default or settings from the AWS environment and shared configuration files.
 

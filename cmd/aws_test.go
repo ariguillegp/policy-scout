@@ -571,6 +571,167 @@ func TestAWSExecutionControlsExplainStructuredErrors(t *testing.T) {
 	}
 }
 
+func TestAWSAuthStatusExecutionControlFlagsAndValidation(t *testing.T) {
+	for _, name := range []string{"timeout", "max-retries"} {
+		if authStatusCmd.Flags().Lookup(name) == nil {
+			t.Errorf("auth status flag --%s is not registered", name)
+		}
+	}
+
+	var help bytes.Buffer
+	authStatusCmd.SetOut(&help)
+	t.Cleanup(func() { authStatusCmd.SetOut(nil) })
+	if err := authStatusCmd.Help(); err != nil {
+		t.Fatalf("render auth status help: %v", err)
+	}
+	for _, expected := range []string{
+		"--timeout",
+		"--max-retries",
+		"configuration and credential loading",
+		"policy-scout aws auth status --timeout 30s --max-retries 3",
+	} {
+		if !strings.Contains(help.String(), expected) {
+			t.Errorf("auth status help does not contain %q:\n%s", expected, help.String())
+		}
+	}
+
+	for name, controls := range map[string]awsExecutionControls{
+		"zero timeout":     {timeoutSet: true},
+		"negative retries": {maxRetries: -1, maxRetriesSet: true},
+		"too many retries": {maxRetries: maxAllowedRetries + 1, maxRetriesSet: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := controls.validate(); err == nil {
+				t.Fatal("expected execution controls to be rejected")
+			}
+		})
+	}
+}
+
+func TestAWSAuthStatusDeadlineCoversConfigCredentialsAndAPIs(t *testing.T) {
+	t.Parallel()
+
+	deadline := time.Now().Add(time.Minute)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	assertDeadline := func(stage string, got context.Context) {
+		t.Helper()
+		gotDeadline, ok := got.Deadline()
+		if !ok || !gotDeadline.Equal(deadline) {
+			t.Fatalf("%s received deadline %s (present: %t), want %s", stage, gotDeadline, ok, deadline)
+		}
+	}
+
+	loader := func(got context.Context, _ ...func(*config.LoadOptions) error) (aws.Config, error) {
+		assertDeadline("configuration loader", got)
+		return aws.Config{Credentials: aws.CredentialsProviderFunc(func(got context.Context) (aws.Credentials, error) {
+			assertDeadline("credential provider", got)
+			return aws.Credentials{Source: "test"}, nil
+		})}, nil
+	}
+	clients := func(aws.Config) (stsClient, authStatusOrganizationsClient) {
+		return &fakeSTSClient{getCallerIdentityFn: func(got context.Context, _ *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
+				assertDeadline("STS", got)
+				return &sts.GetCallerIdentityOutput{
+					Account: aws.String("123456789012"),
+					Arn:     aws.String("arn:aws:iam::123456789012:user/test"),
+					UserId:  aws.String("AIDATEST"),
+				}, nil
+			}}, &fakeOrganizationsClient{describeOrganizationFn: func(got context.Context, _ *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+				assertDeadline("Organizations", got)
+				return &organizations.DescribeOrganizationOutput{Organization: &types.Organization{
+					Id: aws.String("o-example"), MasterAccountId: aws.String("123456789012"),
+				}}, nil
+			}}
+	}
+
+	if err := displayAWSAuthStatusWithDependencies(ctx, &bytes.Buffer{}, "", loader, clients); err != nil {
+		t.Fatalf("display AWS authentication status: %v", err)
+	}
+}
+
+func TestAWSAuthStatusTimeoutAndCancellation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("timeout during credential retrieval", func(t *testing.T) {
+		t.Parallel()
+		controls := awsExecutionControls{timeout: 10 * time.Millisecond, timeoutSet: true}
+		ctx, cancel := controls.context(context.Background())
+		defer cancel()
+		loader := func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
+			return aws.Config{Credentials: aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+				<-ctx.Done()
+				return aws.Credentials{}, ctx.Err()
+			})}, nil
+		}
+
+		err := displayAWSAuthStatusWithDependencies(ctx, &bytes.Buffer{}, "", loader, nil)
+		err = controls.explainError(err)
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "exceeded --timeout 10ms") {
+			t.Fatalf("unexpected timeout error: %v", err)
+		}
+	})
+
+	t.Run("cancellation during Organizations call", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := getAWSAuthStatus(
+			ctx,
+			aws.Credentials{Source: "test"},
+			&fakeSTSClient{getCallerIdentityFn: func(context.Context, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
+				return &sts.GetCallerIdentityOutput{
+					Account: aws.String("123456789012"), Arn: aws.String("arn:test"), UserId: aws.String("user"),
+				}, nil
+			}},
+			&fakeOrganizationsClient{describeOrganizationFn: func(got context.Context, _ *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+				return nil, got.Err()
+			}},
+		)
+		err = (awsExecutionControls{}).explainError(err)
+		if !errors.Is(err, context.Canceled) || classifyError(err).Message != "Policy Scout execution was canceled." {
+			t.Fatalf("unexpected cancellation error: %v", err)
+		}
+	})
+}
+
+func TestAWSAuthStatusAppliesRetryOptionAndExplainsExhaustion(t *testing.T) {
+	t.Parallel()
+
+	controls := awsExecutionControls{maxRetries: 3, maxRetriesSet: true}
+	loader := func(_ context.Context, options ...func(*config.LoadOptions) error) (aws.Config, error) {
+		var loadOptions config.LoadOptions
+		for _, option := range options {
+			if err := option(&loadOptions); err != nil {
+				return aws.Config{}, err
+			}
+		}
+		if loadOptions.RetryMaxAttempts != 4 {
+			t.Fatalf("auth status configured %d maximum attempts, want 4", loadOptions.RetryMaxAttempts)
+		}
+		return aws.Config{Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+			return aws.Credentials{Source: "test"}, nil
+		})}, nil
+	}
+	clients := func(aws.Config) (stsClient, authStatusOrganizationsClient) {
+		return &fakeSTSClient{getCallerIdentityFn: func(context.Context, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
+				return &sts.GetCallerIdentityOutput{
+					Account: aws.String("123456789012"), Arn: aws.String("arn:test"), UserId: aws.String("user"),
+				}, nil
+			}}, &fakeOrganizationsClient{describeOrganizationFn: func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+				return nil, &awsretry.MaxAttemptsError{Attempt: 4, Err: errors.New("throttled")}
+			}}
+	}
+
+	err := displayAWSAuthStatusWithDependencies(
+		context.Background(), &bytes.Buffer{}, "", loader, clients, controls.configLoadOptions()...,
+	)
+	err = controls.explainError(err)
+	if !strings.Contains(err.Error(), "--max-retries 3 (4 total attempts)") {
+		t.Fatalf("unexpected retry exhaustion error: %v", err)
+	}
+}
+
 func TestAWSCallsPropagateContextDeadline(t *testing.T) {
 	t.Parallel()
 
