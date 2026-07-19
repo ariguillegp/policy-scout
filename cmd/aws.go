@@ -38,6 +38,8 @@ const (
 // organizationJSONSchemaVersion identifies the compatibility contract for AWS organization JSON output.
 const organizationJSONSchemaVersion = "1"
 
+const organizationalUnitEntityType = "organizational_unit"
+
 // Defining a custom enum to restrict output format values.
 type outputFormat string
 
@@ -646,7 +648,7 @@ func buildAccountPathJSON(
 		ouName := aws.ToString(ou.Name)
 		cache.entityNames[ouID] = ouName
 		ouNodes = append(ouNodes, organizationJSONNode{
-			Type: "organizational_unit",
+			Type: organizationalUnitEntityType,
 			ID:   ouID,
 			Name: ouName,
 		})
@@ -733,7 +735,7 @@ func buildOrganizationJSONChildren(
 			return nil, err
 		}
 		nodes = append(nodes, organizationJSONNode{
-			Type:     "organizational_unit",
+			Type:     organizationalUnitEntityType,
 			ID:       ouID,
 			Name:     aws.ToString(ou.Name),
 			Children: children,
@@ -1328,7 +1330,7 @@ func entityType(entityID string) string {
 	case strings.HasPrefix(entityID, "r-"):
 		return "root"
 	case strings.HasPrefix(entityID, "ou-"):
-		return "organizational_unit"
+		return organizationalUnitEntityType
 	default:
 		return "account"
 	}
