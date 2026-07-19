@@ -5,6 +5,7 @@ Explore AWS Organizations service control policy (SCP) attachments from a termin
 ## Table of Contents
 
 - [Features](#features)
+- [Installation](#installation)
 - [Prerequisites](#prerequisites)
 - [Usage](#usage)
 - [Automation and agent usage](#automation-and-agent-usage)
@@ -22,6 +23,42 @@ Explore AWS Organizations service control policy (SCP) attachments from a termin
 - Produce structured `json` (default) or a human-readable `text` tree.
 
 Policy Scout lists SCP summary names; it does not retrieve policy documents or evaluate SCP Allow/Deny semantics, IAM policies, resource policies, permission boundaries, session policies, or effective identity permissions.
+
+## Installation
+
+### GitHub release binaries
+
+Download the archive for your operating system and architecture from the [latest GitHub release](https://github.com/ariguillegp/policy-scout/releases/latest), extract it, and place the `policy-scout` executable somewhere on your `PATH`. Release assets are available for Linux, macOS, and Windows. You can verify an archive against the checksums file included with each release.
+
+To install a particular release, select its version from the [releases page](https://github.com/ariguillegp/policy-scout/releases). These prebuilt binaries report the release version through `policy-scout version`.
+
+### Go install
+
+With Go 1.24 or later, install the latest release directly from its Go module:
+
+```bash
+go install github.com/ariguillegp/policy-scout@latest
+```
+
+Pin the command to a particular GitHub tag for a reproducible installation:
+
+```bash
+go install github.com/ariguillegp/policy-scout@v1.8.0
+```
+
+Ensure that Go's binary installation directory, usually `$(go env GOPATH)/bin`, is on your `PATH`. Binaries produced by `go install` currently report their version as `dev`; use a GitHub release binary when the embedded release version is important. `go get` manages dependencies in a Go module and is not the command for installing this executable.
+
+### Build from source
+
+Clone a particular release tag and build it with Go 1.24 or later:
+
+```bash
+git clone --branch v1.8.0 --depth 1 https://github.com/ariguillegp/policy-scout.git
+cd policy-scout
+go build -o policy-scout .
+```
+
+Like `go install`, a binary built directly from source reports its version as `dev`.
 
 ## Prerequisites
 
