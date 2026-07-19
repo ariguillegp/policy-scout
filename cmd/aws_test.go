@@ -175,7 +175,7 @@ func TestOutputFormatSupportsTextAndJSONOnly(t *testing.T) {
 func TestOrganizationJSONNodePreservesSCPsFieldName(t *testing.T) {
 	t.Parallel()
 
-	data, err := encodingjson.Marshal(organizationJSONNode{Type: "account", ID: "123456789012", SCPs: []string{"DenyS3"}})
+	data, err := encodingjson.Marshal(organizationNode{Type: "account", ID: "123456789012", SCPs: []string{"DenyS3"}})
 	if err != nil {
 		t.Fatalf("encode account: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestOrganizationJSONNodePreservesSCPsFieldName(t *testing.T) {
 func TestOrganizationJSONNodeSchemaPreservesLegacySCPsAndAddsAttachments(t *testing.T) {
 	t.Parallel()
 
-	node := organizationJSONNode{
+	node := organizationNode{
 		Type: "account",
 		ID:   "123456789012",
 		Name: "Application",
@@ -219,7 +219,7 @@ func TestOrganizationJSONNodeSchemaPreservesLegacySCPsAndAddsAttachments(t *test
 		t.Fatalf("got JSON\n%s\nwant\n%s", encoded, want)
 	}
 
-	managementNode, err := encodingjson.Marshal(organizationJSONNode{
+	managementNode, err := encodingjson.Marshal(organizationNode{
 		Type:              "account",
 		ID:                "111111111111",
 		Name:              "Management",
@@ -1186,20 +1186,15 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
 
 			var first bytes.Buffer
 			var second bytes.Buffer
-			if test.format == json {
-				if err := displayOrganizationTreeJSON(context.Background(), &first, newClient(false), "all", rootID, "Root", managementAccount); err != nil {
-					t.Fatalf("render first JSON output: %v", err)
-				}
-				if err := displayOrganizationTreeJSON(context.Background(), &second, newClient(true), "all", rootID, "Root", managementAccount); err != nil {
-					t.Fatalf("render second JSON output: %v", err)
-				}
-			} else {
-				if err := displayOrganizationTreeText(context.Background(), &first, newClient(false), "all", rootID, "Root", managementAccount); err != nil {
-					t.Fatalf("render first text output: %v", err)
-				}
-				if err := displayOrganizationTreeText(context.Background(), &second, newClient(true), "all", rootID, "Root", managementAccount); err != nil {
-					t.Fatalf("render second text output: %v", err)
-				}
+			if err := displayOrganizationTree(
+				context.Background(), &first, newClient(false), "all", rootID, "Root", managementAccount, test.format,
+			); err != nil {
+				t.Fatalf("render first %s output: %v", test.format, err)
+			}
+			if err := displayOrganizationTree(
+				context.Background(), &second, newClient(true), "all", rootID, "Root", managementAccount, test.format,
+			); err != nil {
+				t.Fatalf("render second %s output: %v", test.format, err)
 			}
 			if first.String() != test.want {
 				t.Fatalf("first %s output:\n%s\nwant:\n%s", test.format, first.String(), test.want)
@@ -1331,7 +1326,7 @@ func TestListOperationsPaginate(t *testing.T) {
 	}
 }
 
-func TestPrintPathToAccountWalksUpwardAndListsInheritedPolicies(t *testing.T) {
+func TestBuildOrganizationTreeAccountPathWalksUpwardAndListsInheritedPolicies(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -1375,34 +1370,33 @@ func TestPrintPathToAccountWalksUpwardAndListsInheritedPolicies(t *testing.T) {
 		},
 	}
 
-	var output bytes.Buffer
-	err := printPathToAccount(
+	tree, err := buildOrganizationTree(
 		context.Background(),
-		&output,
 		client,
-		rootID,
 		accountID,
+		rootID,
+		"Organization Root",
 		"999999999999",
-		newOrganizationCache(rootID, "Organization Root"),
 	)
 	if err != nil {
-		t.Fatalf("print path: %v", err)
+		t.Fatalf("build path: %v", err)
 	}
 	if listChildrenCalls != 0 {
 		t.Fatalf("list children called %d times", listChildrenCalls)
 	}
+	output := renderOrganizationTreeText(tree)
 	want := "|-- Root: [r-root]\n" +
 		"    |-- OU: Production [ou-root-12345678]\n" +
 		"        |-- Account: Application [123456789012] (SCP summary names from account/ancestor attachments: DenyS3, FullAWSAccess)\n" +
 		"            |-- SCP: DenyS3 [p-deny0001] (Attached to: account Application [123456789012]; Inherited: false)\n" +
 		"            |-- SCP: FullAWSAccess [p-full0001] (Attached to: root Organization Root [r-root]; Inherited: true)\n" +
 		"            |-- SCP: FullAWSAccess [p-full0001] (Attached to: organizational_unit Production [ou-root-12345678]; Inherited: true)\n"
-	if output.String() != want {
-		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output.String(), want)
+	if output != want {
+		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output, want)
 	}
 }
 
-func TestPrintPathToAccountReturnsLookupError(t *testing.T) {
+func TestDisplayOrganizationTreeReturnsLookupErrorWithoutOutput(t *testing.T) {
 	t.Parallel()
 
 	client := &fakeOrganizationsClient{
@@ -1410,17 +1404,54 @@ func TestPrintPathToAccountReturnsLookupError(t *testing.T) {
 			return nil, errors.New("account not found")
 		},
 	}
-	err := printPathToAccount(
-		context.Background(),
-		&bytes.Buffer{},
-		client,
-		"r-root",
-		"123456789012",
-		"999999999999",
-		newOrganizationCache("r-root", ""),
+	var output bytes.Buffer
+	err := displayOrganizationTree(
+		context.Background(), &output, client, "123456789012", "r-root", "", "999999999999", text,
 	)
 	if err == nil || !strings.Contains(err.Error(), "describe account 123456789012") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("discovery error emitted partial output: %q", output.String())
+	}
+}
+
+func TestDisplayOrganizationTreeDoesNotEmitPartialDocumentOnTraversalError(t *testing.T) {
+	t.Parallel()
+
+	const accountID = "123456789012"
+	for _, outputFormat := range []outputFormat{text, json} {
+		outputFormat := outputFormat
+		t.Run(string(outputFormat), func(t *testing.T) {
+			t.Parallel()
+
+			client := &fakeOrganizationsClient{
+				listChildrenFn: func(_ context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+					if input.ChildType == types.ChildTypeAccount {
+						return &organizations.ListChildrenOutput{Children: []types.Child{{
+							Id: aws.String(accountID), Type: types.ChildTypeAccount,
+						}}}, nil
+					}
+					return nil, errors.New("organizational units unavailable")
+				},
+				describeAccountFn: func(context.Context, *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+					return &organizations.DescribeAccountOutput{Account: &types.Account{
+						Id: aws.String(accountID), Name: aws.String("Application"),
+					}}, nil
+				},
+			}
+
+			var output bytes.Buffer
+			err := displayOrganizationTree(
+				context.Background(), &output, client, "all", "r-root", "", "999999999999", outputFormat,
+			)
+			if err == nil || !strings.Contains(err.Error(), "list organizational units for r-root") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if output.Len() != 0 {
+				t.Fatalf("discovery error emitted partial %s document: %q", outputFormat, output.String())
+			}
+		})
 	}
 }
 
@@ -1615,7 +1646,7 @@ func TestManagementAccountIDMustBeAnAccountID(t *testing.T) {
 	}
 }
 
-func TestManagementAccountDoesNotListSCPs(t *testing.T) {
+func TestBuildManagementAccountDoesNotListSCPs(t *testing.T) {
 	t.Parallel()
 
 	policyCalls := 0
@@ -1625,12 +1656,9 @@ func TestManagementAccountDoesNotListSCPs(t *testing.T) {
 			return nil, errors.New("SCPs must not be queried for the management account")
 		},
 	}
-	var output bytes.Buffer
-	err := printAccount(
+	node, err := buildAccountNode(
 		context.Background(),
-		&output,
 		client,
-		"",
 		"123456789012",
 		"Management",
 		"123456789012",
@@ -1644,12 +1672,12 @@ func TestManagementAccountDoesNotListSCPs(t *testing.T) {
 		t.Fatalf("policy API called %d times", policyCalls)
 	}
 	want := "|-- Account: Management (Management Account) [123456789012] (SCPs do not affect management-account users or roles)\n"
-	if output.String() != want {
-		t.Fatalf("unexpected output: %s, want: %s", output.String(), want)
+	if output := renderOrganizationTreeText(node); output != want {
+		t.Fatalf("unexpected output: %s, want: %s", output, want)
 	}
 }
 
-func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
+func TestOrganizationTreeRenderersStayInParityWithoutAdditionalAWSCalls(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -1711,46 +1739,26 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 		},
 	}
 
-	var output bytes.Buffer
-	err := displayOrganizationTreeText(context.Background(), &output, client, "all", rootID, "", managementAccount)
+	tree, err := buildOrganizationTree(context.Background(), client, "all", rootID, "", managementAccount)
 	if err != nil {
-		t.Fatalf("print organization: %v", err)
+		t.Fatalf("build organization: %v", err)
 	}
-	for key, calls := range listCalls {
-		if calls != 1 {
-			t.Fatalf("children lookup %s called %d times", key, calls)
-		}
-	}
-	if len(listCalls) != 4 {
-		t.Fatalf("got %d children lookups, want 4", len(listCalls))
-	}
-	policyCallsMu.Lock()
-	managementPolicyCalls := policyCalls[managementAccount]
-	rootPolicyCalls := policyCalls[rootID]
-	ouPolicyCalls := policyCalls[ouID]
-	policyCallsMu.Unlock()
-	if managementPolicyCalls != 0 {
-		t.Fatalf("management account policies queried %d times", managementPolicyCalls)
-	}
-	if rootPolicyCalls != 1 || ouPolicyCalls != 1 {
-		t.Fatalf("shared ancestor policy calls: root=%d OU=%d, want 1 each", rootPolicyCalls, ouPolicyCalls)
-	}
+	textOutput := renderOrganizationTreeText(tree)
 	want := "|-- Root: [r-root]\n" +
 		"    |-- Account: Management (Management Account) [111111111111] (SCPs do not affect management-account users or roles)\n" +
 		"    |-- OU: Production [ou-root-12345678]\n" +
 		"        |-- Account: Member [222222222222] (SCP summary names from account/ancestor attachments: none)\n" +
 		"        |-- Account: Member [333333333333] (SCP summary names from account/ancestor attachments: none)\n"
-	if output.String() != want {
-		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output.String(), want)
+	if textOutput != want {
+		t.Fatalf("unexpected output:\n%s\nwant:\n%s", textOutput, want)
 	}
 
-	output.Reset()
-	err = displayOrganizationTreeJSON(context.Background(), &output, client, "all", rootID, "", managementAccount)
+	jsonOutput, err := renderOrganizationTreeJSON(tree)
 	if err != nil {
-		t.Fatalf("display organization as JSON: %v", err)
+		t.Fatalf("render organization as JSON: %v", err)
 	}
-	var result organizationJSONNode
-	if err := encodingjson.Unmarshal(output.Bytes(), &result); err != nil {
+	var result organizationNode
+	if err := encodingjson.Unmarshal(jsonOutput, &result); err != nil {
 		t.Fatalf("decode organization JSON: %v", err)
 	}
 	if result.SchemaVersion != organizationJSONSchemaVersion {
@@ -1765,6 +1773,52 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 	organizationalUnit := result.Children[1]
 	if organizationalUnit.ID != ouID || len(organizationalUnit.Children) != 2 {
 		t.Fatalf("unexpected organizational unit: %+v", organizationalUnit)
+	}
+
+	var hierarchyIDs func(organizationNode) []string
+	hierarchyIDs = func(node organizationNode) []string {
+		ids := []string{node.ID}
+		for _, child := range node.Children {
+			ids = append(ids, hierarchyIDs(child)...)
+		}
+		return ids
+	}
+	var textIDs []string
+	for _, line := range strings.Split(textOutput, "\n") {
+		if line == "" || strings.Contains(line, "|-- SCP:") {
+			continue
+		}
+		open := strings.IndexByte(line, '[')
+		close := strings.IndexByte(line[open:], ']')
+		textIDs = append(textIDs, line[open+1:open+close])
+	}
+	if jsonIDs := hierarchyIDs(result); !reflect.DeepEqual(textIDs, jsonIDs) {
+		t.Fatalf("text hierarchy IDs %v do not match JSON hierarchy IDs %v", textIDs, jsonIDs)
+	}
+
+	for key, calls := range listCalls {
+		if calls != 1 {
+			t.Fatalf("children lookup %s called %d times", key, calls)
+		}
+	}
+	if len(listCalls) != 4 {
+		t.Fatalf("got %d children lookups, want 4", len(listCalls))
+	}
+	policyCallsMu.Lock()
+	managementPolicyCalls := policyCalls[managementAccount]
+	rootPolicyCalls := policyCalls[rootID]
+	ouPolicyCalls := policyCalls[ouID]
+	memberPolicyCalls := policyCalls[memberAccount]
+	secondMemberPolicyCalls := policyCalls[secondMember]
+	policyCallsMu.Unlock()
+	if managementPolicyCalls != 0 {
+		t.Fatalf("management account policies queried %d times", managementPolicyCalls)
+	}
+	if rootPolicyCalls != 1 || ouPolicyCalls != 1 || memberPolicyCalls != 1 || secondMemberPolicyCalls != 1 {
+		t.Fatalf(
+			"policy calls: root=%d OU=%d first member=%d second member=%d, want 1 each",
+			rootPolicyCalls, ouPolicyCalls, memberPolicyCalls, secondMemberPolicyCalls,
+		)
 	}
 }
 
@@ -1831,8 +1885,8 @@ func TestFullOrganizationInspectionUsesBoundedConcurrencyAndDeterministicOrder(t
 	var output bytes.Buffer
 	done := make(chan error, 1)
 	go func() {
-		done <- displayOrganizationTreeJSON(
-			context.Background(), &output, client, "all", rootID, "Organization Root", "999999999999",
+		done <- displayOrganizationTree(
+			context.Background(), &output, client, "all", rootID, "Organization Root", "999999999999", json,
 		)
 	}()
 
@@ -1879,7 +1933,7 @@ func TestFullOrganizationInspectionUsesBoundedConcurrencyAndDeterministicOrder(t
 		}
 	}
 
-	var result organizationJSONNode
+	var result organizationNode
 	if err := encodingjson.Unmarshal(output.Bytes(), &result); err != nil {
 		t.Fatalf("decode organization JSON: %v", err)
 	}
@@ -1944,8 +1998,8 @@ func TestFullOrganizationInspectionCancelsOnFailureWithoutPartialText(t *testing
 	var output bytes.Buffer
 	done := make(chan error, 1)
 	go func() {
-		done <- displayOrganizationTreeText(
-			context.Background(), &output, client, "all", rootID, "Organization Root", "999999999999",
+		done <- displayOrganizationTree(
+			context.Background(), &output, client, "all", rootID, "Organization Root", "999999999999", text,
 		)
 	}()
 
@@ -2035,13 +2089,16 @@ func TestDisplayOrganizationTreeJSONBuildsAccountPath(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := displayOrganizationTreeJSON(
-		context.Background(), &output, client, accountID, rootID, "Organization Root", "999999999999",
+	if err := displayOrganizationTree(
+		context.Background(), &output, client, accountID, rootID, "Organization Root", "999999999999", json,
 	); err != nil {
 		t.Fatalf("display JSON: %v", err)
 	}
+	if !strings.HasPrefix(output.String(), "{\n  \"schema_version\": \"1\",") || !strings.HasSuffix(output.String(), "}\n") {
+		t.Fatalf("JSON indentation or document framing changed:\n%s", output.String())
+	}
 
-	var result organizationJSONNode
+	var result organizationNode
 	if err := encodingjson.Unmarshal(output.Bytes(), &result); err != nil {
 		t.Fatalf("decode JSON: %v", err)
 	}

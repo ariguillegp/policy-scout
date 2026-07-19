@@ -41,6 +41,7 @@ const (
 const organizationJSONSchemaVersion = "1"
 
 const (
+	rootEntityType               = "root"
 	accountEntityType            = "account"
 	organizationalUnitEntityType = "organizational_unit"
 )
@@ -503,12 +504,7 @@ func describeAccount(
 		return err
 	}
 
-	switch format {
-	case "json":
-		return displayOrganizationTreeJSON(ctx, writer, client, targetAccountID, rootID, rootName, managementAccountID)
-	default:
-		return displayOrganizationTreeText(ctx, writer, client, targetAccountID, rootID, rootName, managementAccountID)
-	}
+	return displayOrganizationTree(ctx, writer, client, targetAccountID, rootID, rootName, managementAccountID, format)
 }
 
 type scpAttachmentTarget struct {
@@ -587,15 +583,16 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-type organizationJSONNode struct {
-	SchemaVersion     string                 `json:"schema_version,omitempty"`
-	Type              string                 `json:"type"`
-	ID                string                 `json:"id"`
-	Name              string                 `json:"name,omitempty"`
-	ManagementAccount bool                   `json:"management_account,omitempty"`
-	SCPs              []string               `json:"scps,omitempty"`
-	SCPAttachments    []scpAttachment        `json:"scp_attachments,omitempty"`
-	Children          []organizationJSONNode `json:"children,omitempty"`
+// organizationNode is the canonical hierarchy produced by AWS discovery and consumed by every renderer.
+type organizationNode struct {
+	SchemaVersion     string             `json:"schema_version,omitempty"`
+	Type              string             `json:"type"`
+	ID                string             `json:"id"`
+	Name              string             `json:"name,omitempty"`
+	ManagementAccount bool               `json:"management_account,omitempty"`
+	SCPs              []string           `json:"scps,omitempty"`
+	SCPAttachments    []scpAttachment    `json:"scp_attachments,omitempty"`
+	Children          []organizationNode `json:"children,omitempty"`
 }
 
 type organizationCache struct {
@@ -675,18 +672,31 @@ func (cache *organizationCache) policiesForTarget(
 	return load.policies, load.err
 }
 
-func displayOrganizationTreeJSON(
+func displayOrganizationTree(
 	ctx context.Context,
 	writer io.Writer,
 	client organizationsClient,
 	targetAccountID, rootID, rootName, managementAccountID string,
+	outputFormat outputFormat,
 ) error {
-	root := organizationJSONNode{SchemaVersion: organizationJSONSchemaVersion, Type: "root", ID: rootID}
+	root, err := buildOrganizationTree(ctx, client, targetAccountID, rootID, rootName, managementAccountID)
+	if err != nil {
+		return err
+	}
+	return writeOrganizationTree(writer, root, outputFormat)
+}
+
+func buildOrganizationTree(
+	ctx context.Context,
+	client organizationsClient,
+	targetAccountID, rootID, rootName, managementAccountID string,
+) (organizationNode, error) {
+	root := organizationNode{SchemaVersion: organizationJSONSchemaVersion, Type: rootEntityType, ID: rootID}
 	cache := newOrganizationCache(rootID, rootName)
 
 	var err error
 	if strings.EqualFold(targetAccountID, "all") {
-		root.Children, err = buildOrganizationJSONChildren(
+		root.Children, err = buildOrganizationChildren(
 			ctx,
 			client,
 			rootID,
@@ -697,26 +707,20 @@ func displayOrganizationTreeJSON(
 			cache,
 		)
 	} else {
-		root.Children, err = buildAccountPathJSON(ctx, client, targetAccountID, rootID, managementAccountID, cache)
+		root.Children, err = buildAccountPath(ctx, client, targetAccountID, rootID, managementAccountID, cache)
 	}
 	if err != nil {
-		return err
+		return organizationNode{}, err
 	}
-
-	encoder := encodingjson.NewEncoder(writer)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(root); err != nil {
-		return fmt.Errorf("encode organization as JSON: %w", err)
-	}
-	return nil
+	return root, nil
 }
 
-func buildAccountPathJSON(
+func buildAccountPath(
 	ctx context.Context,
 	client organizationsClient,
 	targetAccountID, rootID, managementAccountID string,
 	cache *organizationCache,
-) ([]organizationJSONNode, error) {
+) ([]organizationNode, error) {
 	account, err := getAccount(ctx, client, targetAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("describe account %s: %w", targetAccountID, err)
@@ -750,7 +754,7 @@ func buildAccountPathJSON(
 		accountPath[len(path)-1-index] = path[index]
 	}
 
-	ouNodes := make([]organizationJSONNode, 0, len(accountPath)-2)
+	ouNodes := make([]organizationNode, 0, len(accountPath)-2)
 	for index := 1; index < len(accountPath)-1; index++ {
 		ouID := accountPath[index]
 		ou, err := getOU(ctx, client, ouID)
@@ -759,14 +763,14 @@ func buildAccountPathJSON(
 		}
 		ouName := aws.ToString(ou.Name)
 		cache.setEntityName(ouID, ouName)
-		ouNodes = append(ouNodes, organizationJSONNode{
+		ouNodes = append(ouNodes, organizationNode{
 			Type: organizationalUnitEntityType,
 			ID:   ouID,
 			Name: ouName,
 		})
 	}
 
-	accountNode, err := buildAccountJSONNode(
+	accountNode, err := buildAccountNode(
 		ctx, client, targetAccountID, aws.ToString(account.Name), managementAccountID, accountPath, cache,
 	)
 	if err != nil {
@@ -775,27 +779,28 @@ func buildAccountPathJSON(
 
 	child := accountNode
 	for index := len(ouNodes) - 1; index >= 0; index-- {
-		ouNodes[index].Children = []organizationJSONNode{child}
+		ouNodes[index].Children = []organizationNode{child}
 		child = ouNodes[index]
 	}
-	return []organizationJSONNode{child}, nil
+	return []organizationNode{child}, nil
 }
 
-func buildOrganizationJSONChildren(
+// buildOrganizationChildren owns hierarchy ordering: accounts precede OUs and each group is sorted by ID.
+func buildOrganizationChildren(
 	ctx context.Context,
 	client organizationsClient,
 	parentID, managementAccountID string,
 	ancestors []string,
 	completed, active map[string]bool,
 	cache *organizationCache,
-) ([]organizationJSONNode, error) {
+) ([]organizationNode, error) {
 	if active[parentID] {
 		return nil, fmt.Errorf("cycle detected in organization hierarchy at %s", parentID)
 	}
 	active[parentID] = true
 	defer delete(active, parentID)
 
-	var nodes []organizationJSONNode
+	var nodes []organizationNode
 	accounts, err := listChildren(ctx, client, parentID, types.ChildTypeAccount)
 	if err != nil {
 		return nil, fmt.Errorf("list accounts for %s: %w", parentID, err)
@@ -812,7 +817,7 @@ func buildOrganizationJSONChildren(
 		accountIDs = append(accountIDs, accountID)
 	}
 
-	accountNodes := make([]organizationJSONNode, len(accountIDs))
+	accountNodes := make([]organizationNode, len(accountIDs))
 	err = runOrganizationJobs(ctx, len(accountIDs), func(jobCtx context.Context, index int) error {
 		accountID := accountIDs[index]
 		account, err := getAccount(jobCtx, client, accountID)
@@ -820,7 +825,7 @@ func buildOrganizationJSONChildren(
 			return fmt.Errorf("get account %s: %w", accountID, err)
 		}
 		cache.setEntityName(accountID, aws.ToString(account.Name))
-		node, err := buildAccountJSONNode(
+		node, err := buildAccountNode(
 			jobCtx, client, accountID, aws.ToString(account.Name), managementAccountID, appendPath(ancestors, accountID), cache,
 		)
 		if err != nil {
@@ -854,13 +859,13 @@ func buildOrganizationJSONChildren(
 			return nil, fmt.Errorf("get organizational unit %s: %w", ouID, err)
 		}
 		cache.setEntityName(ouID, aws.ToString(ou.Name))
-		children, err := buildOrganizationJSONChildren(
+		children, err := buildOrganizationChildren(
 			ctx, client, ouID, managementAccountID, appendPath(ancestors, ouID), completed, active, cache,
 		)
 		if err != nil {
 			return nil, err
 		}
-		nodes = append(nodes, organizationJSONNode{
+		nodes = append(nodes, organizationNode{
 			Type:     organizationalUnitEntityType,
 			ID:       ouID,
 			Name:     aws.ToString(ou.Name),
@@ -925,14 +930,14 @@ sendJobs:
 	return ctx.Err()
 }
 
-func buildAccountJSONNode(
+func buildAccountNode(
 	ctx context.Context,
 	client organizationsClient,
 	accountID, accountName, managementAccountID string,
 	path []string,
 	cache *organizationCache,
-) (organizationJSONNode, error) {
-	node := organizationJSONNode{Type: accountEntityType, ID: accountID, Name: accountName}
+) (organizationNode, error) {
+	node := organizationNode{Type: accountEntityType, ID: accountID, Name: accountName}
 	if accountID == managementAccountID {
 		node.ManagementAccount = true
 		return node, nil
@@ -940,7 +945,7 @@ func buildAccountJSONNode(
 
 	scpNames, attachments, err := listSCPsForPath(ctx, client, path, cache)
 	if err != nil {
-		return organizationJSONNode{}, fmt.Errorf("get SCPs for account %s: %w", accountID, err)
+		return organizationNode{}, fmt.Errorf("get SCPs for account %s: %w", accountID, err)
 	}
 	node.SCPs = scpNames
 	node.SCPAttachments = attachments
@@ -952,231 +957,100 @@ func writeOutput(writer io.Writer, outputFormat string, values ...any) error {
 	return err
 }
 
-func displayOrganizationTreeText(
-	ctx context.Context,
-	writer io.Writer,
-	client organizationsClient,
-	targetAccountID, rootID, rootName, managementAccountID string,
-) error {
-	cache := newOrganizationCache(rootID, rootName)
-	if strings.EqualFold(targetAccountID, "all") {
-		var output strings.Builder
-		if err := writeOutput(&output, "|-- Root: [%s]\n", rootID); err != nil {
-			return err
-		}
-		if err := printEntireOrg(
-			ctx,
-			&output,
-			client,
-			rootID,
-			indent,
-			managementAccountID,
-			[]string{rootID},
-			map[string]bool{},
-			map[string]bool{},
-			cache,
-		); err != nil {
-			return err
-		}
-		_, err := io.WriteString(writer, output.String())
-		return err
-	}
-
-	return printPathToAccount(ctx, writer, client, rootID, targetAccountID, managementAccountID, cache)
-}
-
-func printPathToAccount(
-	ctx context.Context,
-	writer io.Writer,
-	client organizationsClient,
-	rootID, targetAccountID, managementAccountID string,
-	cache *organizationCache,
-) error {
-	account, err := getAccount(ctx, client, targetAccountID)
-	if err != nil {
-		return fmt.Errorf("describe account %s: %w", targetAccountID, err)
-	}
-	cache.setEntityName(targetAccountID, aws.ToString(account.Name))
-
-	path := []string{targetAccountID}
-	visited := map[string]bool{targetAccountID: true}
-	childID := targetAccountID
-	for childID != rootID {
-		parents, err := listParents(ctx, client, childID)
-		if err != nil {
-			return fmt.Errorf("list parents for %s: %w", childID, err)
-		}
-		if len(parents) != 1 {
-			return fmt.Errorf("expected exactly one parent for %s, got %d", childID, len(parents))
-		}
-
-		parentID := aws.ToString(parents[0].Id)
-		if parents[0].Type == types.ParentTypeRoot && parentID != rootID {
-			return fmt.Errorf("AWS returned root parent %s, expected %s", parentID, rootID)
-		}
-		if visited[parentID] {
-			return fmt.Errorf("cycle detected in organization hierarchy at %s", parentID)
-		}
-		visited[parentID] = true
-		path = append(path, parentID)
-		childID = parentID
-	}
-
-	for left, right := 0, len(path)-1; left < right; left, right = left+1, right-1 {
-		path[left], path[right] = path[right], path[left]
-	}
-
-	prefix := ""
-	for _, entityID := range path {
-		switch {
-		case entityID == rootID:
-			if err := writeOutput(writer, "|-- Root: [%s]\n", entityID); err != nil {
-				return err
-			}
-		case strings.HasPrefix(entityID, "ou-"):
-			name, err := getNameByID(ctx, client, entityID)
-			if err != nil {
-				return fmt.Errorf("get name for %s: %w", entityID, err)
-			}
-			if err := writeOutput(writer, "%s|-- OU: %s [%s]\n", prefix, name, entityID); err != nil {
-				return err
-			}
-			cache.setEntityName(entityID, name)
-		default:
-			if err := printAccount(
-				ctx,
-				writer,
-				client,
-				prefix,
-				entityID,
-				aws.ToString(account.Name),
-				managementAccountID,
-				path,
-				cache,
-			); err != nil {
-				return err
-			}
-		}
-		prefix += indent
-	}
-
-	return nil
-}
-
-// printEntireOrg builds the complete tree before rendering it in depth-first order.
-func printEntireOrg(
-	ctx context.Context,
-	writer io.Writer,
-	client organizationsClient,
-	parentID, prefix, managementAccountID string,
-	ancestors []string,
-	completed, active map[string]bool,
-	cache *organizationCache,
-) error {
-	nodes, err := buildOrganizationJSONChildren(
-		ctx, client, parentID, managementAccountID, ancestors, completed, active, cache,
-	)
-	if err != nil {
-		return err
-	}
-	return printOrganizationTextNodes(writer, nodes, prefix)
-}
-
-func printOrganizationTextNodes(writer io.Writer, nodes []organizationJSONNode, prefix string) error {
-	for _, node := range nodes {
-		switch node.Type {
-		case accountEntityType:
-			if err := printOrganizationAccountNode(writer, prefix, node); err != nil {
-				return err
-			}
-		case organizationalUnitEntityType:
-			if err := writeOutput(writer, "%s|-- OU: %s [%s]\n", prefix, node.Name, node.ID); err != nil {
-				return err
-			}
-			if err := printOrganizationTextNodes(writer, node.Children, prefix+indent); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("cannot render organization node with type %q", node.Type)
-		}
-	}
-	return nil
-}
-
 func appendPath(path []string, entityID string) []string {
 	result := make([]string, len(path), len(path)+1)
 	copy(result, path)
 	return append(result, entityID)
 }
 
-func printAccount(
-	ctx context.Context,
-	writer io.Writer,
-	client organizationsClient,
-	prefix, accountID, accountName, managementAccountID string,
-	path []string,
-	cache *organizationCache,
-) error {
-	node := organizationJSONNode{Type: accountEntityType, ID: accountID, Name: accountName}
-	if accountID == managementAccountID {
-		node.ManagementAccount = true
-		return printOrganizationAccountNode(writer, prefix, node)
-	}
-
-	scpNames, attachments, err := listSCPsForPath(ctx, client, path, cache)
-	if err != nil {
-		return fmt.Errorf("get SCPs for account %s: %w", accountID, err)
-	}
-	node.SCPs = scpNames
-	node.SCPAttachments = attachments
-	return printOrganizationAccountNode(writer, prefix, node)
-}
-
-func printOrganizationAccountNode(writer io.Writer, prefix string, node organizationJSONNode) error {
-	if node.ManagementAccount {
-		return writeOutput(
-			writer,
-			"%s|-- Account: %s (Management Account) [%s] (SCPs do not affect management-account users or roles)\n",
-			prefix,
-			node.Name,
-			node.ID,
-		)
-	}
-	scpSummary := strings.Join(node.SCPs, ", ")
-	if scpSummary == "" {
-		scpSummary = "none"
-	}
-	if err := writeOutput(
-		writer,
-		"%s|-- Account: %s [%s] (SCP summary names from account/ancestor attachments: %s)\n",
-		prefix,
-		node.Name,
-		node.ID,
-		scpSummary,
-	); err != nil {
-		return err
-	}
-	for _, attachment := range node.SCPAttachments {
-		targetName := ""
-		if attachment.AttachedTo.Name != "" {
-			targetName = " " + attachment.AttachedTo.Name
-		}
-		if err := writeOutput(
-			writer,
-			"%s%s|-- SCP: %s [%s] (Attached to: %s%s [%s]; Inherited: %t)\n",
-			prefix,
-			indent,
-			attachment.PolicyName,
-			attachment.PolicyID,
-			attachment.AttachedTo.Type,
-			targetName,
-			attachment.AttachedTo.ID,
-			attachment.Inherited,
-		); err != nil {
+func writeOrganizationTree(writer io.Writer, root organizationNode, outputFormat outputFormat) error {
+	var document []byte
+	if outputFormat == json {
+		encoded, err := renderOrganizationTreeJSON(root)
+		if err != nil {
 			return err
 		}
+		document = encoded
+	} else {
+		document = []byte(renderOrganizationTreeText(root))
 	}
-	return nil
+
+	written, err := writer.Write(document)
+	if err == nil && written != len(document) {
+		err = io.ErrShortWrite
+	}
+	if err != nil && outputFormat == json {
+		return fmt.Errorf("encode organization as JSON: %w", err)
+	}
+	return err
+}
+
+func renderOrganizationTreeJSON(root organizationNode) ([]byte, error) {
+	encoded, err := encodingjson.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode organization as JSON: %w", err)
+	}
+	return append(encoded, '\n'), nil
+}
+
+func renderOrganizationTreeText(root organizationNode) string {
+	var output strings.Builder
+	renderOrganizationTextNode(&output, root, "")
+	return output.String()
+}
+
+func renderOrganizationTextNode(output *strings.Builder, node organizationNode, prefix string) {
+	switch node.Type {
+	case rootEntityType:
+		fmt.Fprintf(output, "|-- Root: [%s]\n", node.ID)
+	case organizationalUnitEntityType:
+		fmt.Fprintf(output, "%s|-- OU: %s [%s]\n", prefix, node.Name, node.ID)
+	case accountEntityType:
+		if node.ManagementAccount {
+			fmt.Fprintf(
+				output,
+				"%s|-- Account: %s (Management Account) [%s] (SCPs do not affect management-account users or roles)\n",
+				prefix,
+				node.Name,
+				node.ID,
+			)
+		} else {
+			summary := strings.Join(node.SCPs, ", ")
+			if summary == "" {
+				summary = "none"
+			}
+			fmt.Fprintf(
+				output,
+				"%s|-- Account: %s [%s] (SCP summary names from account/ancestor attachments: %s)\n",
+				prefix,
+				node.Name,
+				node.ID,
+				summary,
+			)
+			for _, attachment := range node.SCPAttachments {
+				targetName := ""
+				if attachment.AttachedTo.Name != "" {
+					targetName = " " + attachment.AttachedTo.Name
+				}
+				fmt.Fprintf(
+					output,
+					"%s%s|-- SCP: %s [%s] (Attached to: %s%s [%s]; Inherited: %t)\n",
+					prefix,
+					indent,
+					attachment.PolicyName,
+					attachment.PolicyID,
+					attachment.AttachedTo.Type,
+					targetName,
+					attachment.AttachedTo.ID,
+					attachment.Inherited,
+				)
+			}
+		}
+	}
+
+	for _, child := range node.Children {
+		renderOrganizationTextNode(output, child, prefix+indent)
+	}
 }
 
 // listChildren lists all children of the requested type across every response page,
@@ -1340,25 +1214,6 @@ func getRoot(ctx context.Context, client organizations.ListRootsAPIClient) (stri
 	return "", "", errors.New("no roots found in the organization")
 }
 
-func getNameByID(ctx context.Context, client organizationsClient, entityID string) (string, error) {
-	if validateAccountID(entityID) == nil {
-		account, err := getAccount(ctx, client, entityID)
-		if err != nil {
-			return "", fmt.Errorf("get account: %w", err)
-		}
-		return aws.ToString(account.Name), nil
-	}
-	if strings.HasPrefix(entityID, "r-") {
-		return "Root", nil
-	}
-
-	ou, err := getOU(ctx, client, entityID)
-	if err != nil {
-		return "", fmt.Errorf("get OU: %w", err)
-	}
-	return aws.ToString(ou.Name), nil
-}
-
 // listParents consumes every response page for the target entity.
 func listParents(ctx context.Context, client organizations.ListParentsAPIClient, entityID string) ([]types.Parent, error) {
 	paginator := organizations.NewListParentsPaginator(client, &organizations.ListParentsInput{ChildId: &entityID})
@@ -1474,7 +1329,7 @@ func listSCPsForPath(
 func entityType(entityID string) string {
 	switch {
 	case strings.HasPrefix(entityID, "r-"):
-		return "root"
+		return rootEntityType
 	case strings.HasPrefix(entityID, "ou-"):
 		return organizationalUnitEntityType
 	default:
