@@ -6,6 +6,7 @@ import (
 	encodingjson "encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +180,52 @@ func TestOrganizationJSONNodePreservesSCPsFieldName(t *testing.T) {
 	}
 	if _, found := fields["scps"]; !found {
 		t.Fatalf("JSON account does not contain compatibility field %q: %s", "scps", data)
+	}
+}
+
+func TestOrganizationJSONNodeSchemaPreservesLegacySCPsAndAddsAttachments(t *testing.T) {
+	t.Parallel()
+
+	node := organizationJSONNode{
+		Type: "account",
+		ID:   "123456789012",
+		Name: "Application",
+		SCPs: []string{"DenyS3"},
+		SCPAttachments: []scpAttachment{{
+			PolicyID:   "p-deny0001",
+			PolicyName: "DenyS3",
+			AttachedTo: scpAttachmentTarget{
+				Type: "account",
+				ID:   "123456789012",
+				Name: "Application",
+			},
+			Inherited: false,
+		}},
+	}
+
+	encoded, err := encodingjson.Marshal(node)
+	if err != nil {
+		t.Fatalf("encode account node: %v", err)
+	}
+	want := `{"type":"account","id":"123456789012","name":"Application","scps":["DenyS3"],` +
+		`"scp_attachments":[{"policy_id":"p-deny0001","policy_name":"DenyS3",` +
+		`"attached_to":{"type":"account","id":"123456789012","name":"Application"},"inherited":false}]}`
+	if string(encoded) != want {
+		t.Fatalf("got JSON\n%s\nwant\n%s", encoded, want)
+	}
+
+	managementNode, err := encodingjson.Marshal(organizationJSONNode{
+		Type:              "account",
+		ID:                "111111111111",
+		Name:              "Management",
+		ManagementAccount: true,
+	})
+	if err != nil {
+		t.Fatalf("encode management account node: %v", err)
+	}
+	managementWant := `{"type":"account","id":"111111111111","name":"Management","management_account":true}`
+	if string(managementNode) != managementWant {
+		t.Fatalf("got management JSON\n%s\nwant\n%s", managementNode, managementWant)
 	}
 }
 
@@ -463,7 +510,7 @@ func TestAWSCallsPropagateContextDeadline(t *testing.T) {
 	if _, err := listSCPsForTarget(ctx, client, "123456789012"); err != nil {
 		t.Fatalf("list SCPs: %v", err)
 	}
-	if _, err := getRootID(ctx, client); err != nil {
+	if _, _, err := getRoot(ctx, client); err != nil {
 		t.Fatalf("get root: %v", err)
 	}
 	if _, err := getAccount(ctx, client, "123456789012"); err != nil {
@@ -781,7 +828,9 @@ func TestListOperationsPaginate(t *testing.T) {
 			if input.NextToken == nil {
 				return &organizations.ListRootsOutput{NextToken: aws.String("next")}, nil
 			}
-			return &organizations.ListRootsOutput{Roots: []types.Root{{Id: aws.String("r-root")}}}, nil
+			return &organizations.ListRootsOutput{Roots: []types.Root{{
+				Id: aws.String("r-root"), Name: aws.String("Organization Root"),
+			}}}, nil
 		},
 	}
 
@@ -793,9 +842,9 @@ func TestListOperationsPaginate(t *testing.T) {
 	if err != nil || len(policies) != 2 {
 		t.Fatalf("policies: got %d, error %v", len(policies), err)
 	}
-	rootID, err := getRootID(context.Background(), client)
-	if err != nil || rootID != "r-root" {
-		t.Fatalf("root: got %q, error %v", rootID, err)
+	rootID, rootName, err := getRoot(context.Background(), client)
+	if err != nil || rootID != "r-root" || rootName != "Organization Root" {
+		t.Fatalf("root: got %q (%q), error %v", rootID, rootName, err)
 	}
 }
 
@@ -844,7 +893,15 @@ func TestPrintPathToAccountWalksUpwardAndListsInheritedPolicies(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	err := printPathToAccount(context.Background(), &output, client, rootID, accountID, "999999999999")
+	err := printPathToAccount(
+		context.Background(),
+		&output,
+		client,
+		rootID,
+		accountID,
+		"999999999999",
+		newOrganizationCache(rootID, "Organization Root"),
+	)
 	if err != nil {
 		t.Fatalf("print path: %v", err)
 	}
@@ -853,7 +910,10 @@ func TestPrintPathToAccountWalksUpwardAndListsInheritedPolicies(t *testing.T) {
 	}
 	want := "|-- Root: [r-root]\n" +
 		"    |-- OU: Production [ou-root-12345678]\n" +
-		"        |-- Account: Application [123456789012] (SCP summary names from account/ancestor attachments: DenyS3, FullAWSAccess)\n"
+		"        |-- Account: Application [123456789012] (SCP summary names from account/ancestor attachments: DenyS3, FullAWSAccess)\n" +
+		"            |-- SCP: DenyS3 [p-deny0001] (Attached to: account Application [123456789012]; Inherited: false)\n" +
+		"            |-- SCP: FullAWSAccess [p-full0001] (Attached to: root Organization Root [r-root]; Inherited: true)\n" +
+		"            |-- SCP: FullAWSAccess [p-full0001] (Attached to: organizational_unit Production [ou-root-12345678]; Inherited: true)\n"
 	if output.String() != want {
 		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output.String(), want)
 	}
@@ -867,7 +927,15 @@ func TestPrintPathToAccountReturnsLookupError(t *testing.T) {
 			return nil, errors.New("account not found")
 		},
 	}
-	err := printPathToAccount(context.Background(), &bytes.Buffer{}, client, "r-root", "123456789012", "999999999999")
+	err := printPathToAccount(
+		context.Background(),
+		&bytes.Buffer{},
+		client,
+		"r-root",
+		"123456789012",
+		"999999999999",
+		newOrganizationCache("r-root", ""),
+	)
 	if err == nil || !strings.Contains(err.Error(), "describe account 123456789012") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -900,36 +968,103 @@ func TestDescribeResponsesRequireMatchingIDsAndNames(t *testing.T) {
 	}
 }
 
-func TestListSCPsForPathDeduplicatesOnlyByID(t *testing.T) {
+func TestListSCPsForPathPreservesUnambiguousAttachmentProvenance(t *testing.T) {
 	t.Parallel()
 
+	const (
+		rootID    = "r-root"
+		ouID      = "ou-root-12345678"
+		accountID = "123456789012"
+	)
+	policyCalls := make(map[string]int)
 	client := &fakeOrganizationsClient{
 		listPoliciesForTargetFn: func(_ context.Context, input *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
-			if aws.ToString(input.TargetId) == "r-root" {
+			targetID := aws.ToString(input.TargetId)
+			policyCalls[targetID]++
+			switch targetID {
+			case rootID:
 				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{
 					{Id: aws.String("p-shared01"), Name: aws.String("Shared"), Type: types.PolicyTypeServiceControlPolicy},
-					{Id: aws.String("p-first001"), Name: aws.String("FirstPolicy"), Type: types.PolicyTypeServiceControlPolicy},
+					{Id: aws.String("p-first001"), Name: aws.String("SameName"), Type: types.PolicyTypeServiceControlPolicy},
 				}}, nil
+			case ouID:
+				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{
+					{Id: aws.String("p-shared01"), Name: aws.String("Shared"), Type: types.PolicyTypeServiceControlPolicy},
+					{Id: aws.String("p-second01"), Name: aws.String("SameName"), Type: types.PolicyTypeServiceControlPolicy},
+				}}, nil
+			case accountID:
+				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{
+					{Id: aws.String("p-direct001"), Name: aws.String("Direct"), Type: types.PolicyTypeServiceControlPolicy},
+					{Id: aws.String("p-direct001"), Name: aws.String("Direct"), Type: types.PolicyTypeServiceControlPolicy},
+					{Id: aws.String("p-shared01"), Name: aws.String("Shared"), Type: types.PolicyTypeServiceControlPolicy},
+				}}, nil
+			default:
+				return nil, errors.New("unexpected policy lookup")
 			}
-			return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{
-				{Id: aws.String("p-shared01"), Name: aws.String("Shared"), Type: types.PolicyTypeServiceControlPolicy},
-				{Id: aws.String("p-second01"), Name: aws.String("SecondPolicy"), Type: types.PolicyTypeServiceControlPolicy},
-			}}, nil
 		},
 	}
 
-	names, err := listSCPsForPath(
+	cache := newOrganizationCache(rootID, "Organization Root")
+	cache.entityNames[ouID] = "Production"
+	cache.entityNames[accountID] = "Application"
+	names, attachments, err := listSCPsForPath(
 		context.Background(),
 		client,
-		[]string{"r-root", "123456789012"},
-		map[string][]types.PolicySummary{},
+		[]string{rootID, ouID, accountID},
+		cache,
 	)
 	if err != nil {
 		t.Fatalf("list policies: %v", err)
 	}
-	want := []string{"FirstPolicy", "SecondPolicy", "Shared"}
-	if strings.Join(names, ",") != strings.Join(want, ",") {
-		t.Fatalf("got %v, want %v", names, want)
+	wantNames := []string{"Direct", "SameName", "Shared"}
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Fatalf("got names %v, want %v", names, wantNames)
+	}
+	wantAttachments := []scpAttachment{
+		{
+			PolicyID:   "p-direct001",
+			PolicyName: "Direct",
+			AttachedTo: scpAttachmentTarget{Type: "account", ID: accountID, Name: "Application"},
+			Inherited:  false,
+		},
+		{
+			PolicyID:   "p-first001",
+			PolicyName: "SameName",
+			AttachedTo: scpAttachmentTarget{Type: "root", ID: rootID, Name: "Organization Root"},
+			Inherited:  true,
+		},
+		{
+			PolicyID:   "p-second01",
+			PolicyName: "SameName",
+			AttachedTo: scpAttachmentTarget{Type: "organizational_unit", ID: ouID, Name: "Production"},
+			Inherited:  true,
+		},
+		{
+			PolicyID:   "p-shared01",
+			PolicyName: "Shared",
+			AttachedTo: scpAttachmentTarget{Type: "root", ID: rootID, Name: "Organization Root"},
+			Inherited:  true,
+		},
+		{
+			PolicyID:   "p-shared01",
+			PolicyName: "Shared",
+			AttachedTo: scpAttachmentTarget{Type: "organizational_unit", ID: ouID, Name: "Production"},
+			Inherited:  true,
+		},
+		{
+			PolicyID:   "p-shared01",
+			PolicyName: "Shared",
+			AttachedTo: scpAttachmentTarget{Type: "account", ID: accountID, Name: "Application"},
+			Inherited:  false,
+		},
+	}
+	if !reflect.DeepEqual(attachments, wantAttachments) {
+		t.Fatalf("got attachments\n%+v\nwant\n%+v", attachments, wantAttachments)
+	}
+	for _, targetID := range []string{rootID, ouID, accountID} {
+		if policyCalls[targetID] != 1 {
+			t.Fatalf("policies for %s listed %d times, want once", targetID, policyCalls[targetID])
+		}
 	}
 }
 
@@ -941,19 +1076,15 @@ func TestListSCPsForPathRejectsConflictingSummaries(t *testing.T) {
 			"r-root":       {{Id: aws.String("p-00000001"), Name: aws.String("First"), Type: types.PolicyTypeServiceControlPolicy}},
 			"123456789012": {{Id: aws.String("p-00000001"), Name: aws.String("Second"), Type: types.PolicyTypeServiceControlPolicy}},
 		},
-		"same name with different IDs": {
-			"r-root":       {{Id: aws.String("p-00000001"), Name: aws.String("Policy"), Type: types.PolicyTypeServiceControlPolicy}},
-			"123456789012": {{Id: aws.String("p-00000002"), Name: aws.String("Policy"), Type: types.PolicyTypeServiceControlPolicy}},
-		},
 	}
 	for name, cache := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			_, err := listSCPsForPath(
+			_, _, err := listSCPsForPath(
 				context.Background(),
 				&fakeOrganizationsClient{},
 				[]string{"r-root", "123456789012"},
-				cache,
+				&organizationCache{policiesByTarget: cache, entityNames: map[string]string{}},
 			)
 			if err == nil || !strings.Contains(err.Error(), "conflicting") {
 				t.Fatalf("unexpected error: %v", err)
@@ -1021,7 +1152,7 @@ func TestManagementAccountDoesNotListSCPs(t *testing.T) {
 		"Management",
 		"123456789012",
 		[]string{"r-root", "123456789012"},
-		map[string][]types.PolicySummary{},
+		newOrganizationCache("r-root", "Organization Root"),
 	)
 	if err != nil {
 		t.Fatalf("print account: %v", err)
@@ -1095,7 +1226,7 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	err := displayOrganizationTreeText(context.Background(), &output, client, "all", rootID, managementAccount)
+	err := displayOrganizationTreeText(context.Background(), &output, client, "all", rootID, "", managementAccount)
 	if err != nil {
 		t.Fatalf("print organization: %v", err)
 	}
@@ -1123,7 +1254,7 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 	}
 
 	output.Reset()
-	err = displayOrganizationTreeJSON(context.Background(), &output, client, "all", rootID, managementAccount)
+	err = displayOrganizationTreeJSON(context.Background(), &output, client, "all", rootID, "", managementAccount)
 	if err != nil {
 		t.Fatalf("display organization as JSON: %v", err)
 	}
@@ -1136,6 +1267,9 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 	}
 	if len(result.Children) != 2 || !result.Children[0].ManagementAccount {
 		t.Fatalf("unexpected root children: %+v", result.Children)
+	}
+	if result.Children[0].SCPs != nil || result.Children[0].SCPAttachments != nil {
+		t.Fatalf("management account contains SCP data: %+v", result.Children[0])
 	}
 	organizationalUnit := result.Children[1]
 	if organizationalUnit.ID != ouID || len(organizationalUnit.Children) != 2 {
@@ -1177,18 +1311,28 @@ func TestDisplayOrganizationTreeJSONBuildsAccountPath(t *testing.T) {
 			}
 		},
 		listPoliciesForTargetFn: func(_ context.Context, input *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
-			if aws.ToString(input.TargetId) == accountID {
+			switch aws.ToString(input.TargetId) {
+			case rootID:
+				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{{
+					Id: aws.String("p-full0001"), Name: aws.String("FullAWSAccess"), Type: types.PolicyTypeServiceControlPolicy,
+				}}}, nil
+			case ouID:
+				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{{
+					Id: aws.String("p-regions01"), Name: aws.String("DenyRegions"), Type: types.PolicyTypeServiceControlPolicy,
+				}}}, nil
+			case accountID:
 				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{{
 					Id: aws.String("p-deny0001"), Name: aws.String("DenyS3"), Type: types.PolicyTypeServiceControlPolicy,
 				}}}, nil
+			default:
+				return nil, errors.New("unexpected policy lookup")
 			}
-			return &organizations.ListPoliciesForTargetOutput{}, nil
 		},
 	}
 
 	var output bytes.Buffer
 	if err := displayOrganizationTreeJSON(
-		context.Background(), &output, client, accountID, rootID, "999999999999",
+		context.Background(), &output, client, accountID, rootID, "Organization Root", "999999999999",
 	); err != nil {
 		t.Fatalf("display JSON: %v", err)
 	}
@@ -1206,7 +1350,30 @@ func TestDisplayOrganizationTreeJSONBuildsAccountPath(t *testing.T) {
 	}
 	account := ou.Children[0]
 	if account.Type != "account" || account.ID != accountID || account.Name != "Application" ||
-		strings.Join(account.SCPs, ",") != "DenyS3" {
+		strings.Join(account.SCPs, ",") != "DenyRegions,DenyS3,FullAWSAccess" {
 		t.Fatalf("unexpected account: %+v", account)
+	}
+	wantAttachments := []scpAttachment{
+		{
+			PolicyID:   "p-regions01",
+			PolicyName: "DenyRegions",
+			AttachedTo: scpAttachmentTarget{Type: "organizational_unit", ID: ouID, Name: "Production"},
+			Inherited:  true,
+		},
+		{
+			PolicyID:   "p-deny0001",
+			PolicyName: "DenyS3",
+			AttachedTo: scpAttachmentTarget{Type: "account", ID: accountID, Name: "Application"},
+			Inherited:  false,
+		},
+		{
+			PolicyID:   "p-full0001",
+			PolicyName: "FullAWSAccess",
+			AttachedTo: scpAttachmentTarget{Type: "root", ID: rootID, Name: "Organization Root"},
+			Inherited:  true,
+		},
+	}
+	if !reflect.DeepEqual(account.SCPAttachments, wantAttachments) {
+		t.Fatalf("got attachments\n%+v\nwant\n%+v", account.SCPAttachments, wantAttachments)
 	}
 }

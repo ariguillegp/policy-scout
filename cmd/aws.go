@@ -423,7 +423,7 @@ func describeAccount(
 	}
 	client := organizations.NewFromConfig(cfg)
 
-	rootID, err := getRootID(ctx, client)
+	rootID, rootName, err := getRoot(ctx, client)
 	if err != nil {
 		return fmt.Errorf("get organization root ID: %w", err)
 	}
@@ -435,10 +435,23 @@ func describeAccount(
 
 	switch format {
 	case "json":
-		return displayOrganizationTreeJSON(ctx, writer, client, targetAccountID, rootID, managementAccountID)
+		return displayOrganizationTreeJSON(ctx, writer, client, targetAccountID, rootID, rootName, managementAccountID)
 	default:
-		return displayOrganizationTreeText(ctx, writer, client, targetAccountID, rootID, managementAccountID)
+		return displayOrganizationTreeText(ctx, writer, client, targetAccountID, rootID, rootName, managementAccountID)
 	}
+}
+
+type scpAttachmentTarget struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+}
+
+type scpAttachment struct {
+	PolicyID   string              `json:"policy_id"`
+	PolicyName string              `json:"policy_name"`
+	AttachedTo scpAttachmentTarget `json:"attached_to"`
+	Inherited  bool                `json:"inherited"`
 }
 
 type organizationJSONNode struct {
@@ -448,17 +461,34 @@ type organizationJSONNode struct {
 	Name              string                 `json:"name,omitempty"`
 	ManagementAccount bool                   `json:"management_account,omitempty"`
 	SCPs              []string               `json:"scps,omitempty"`
+	SCPAttachments    []scpAttachment        `json:"scp_attachments,omitempty"`
 	Children          []organizationJSONNode `json:"children,omitempty"`
+}
+
+type organizationCache struct {
+	policiesByTarget map[string][]types.PolicySummary
+	entityNames      map[string]string
+}
+
+func newOrganizationCache(rootID, rootName string) *organizationCache {
+	cache := &organizationCache{
+		policiesByTarget: map[string][]types.PolicySummary{},
+		entityNames:      map[string]string{},
+	}
+	if rootName != "" {
+		cache.entityNames[rootID] = rootName
+	}
+	return cache
 }
 
 func displayOrganizationTreeJSON(
 	ctx context.Context,
 	writer io.Writer,
 	client organizationsClient,
-	targetAccountID, rootID, managementAccountID string,
+	targetAccountID, rootID, rootName, managementAccountID string,
 ) error {
 	root := organizationJSONNode{SchemaVersion: organizationJSONSchemaVersion, Type: "root", ID: rootID}
-	policyCache := map[string][]types.PolicySummary{}
+	cache := newOrganizationCache(rootID, rootName)
 
 	var err error
 	if strings.EqualFold(targetAccountID, "all") {
@@ -470,10 +500,10 @@ func displayOrganizationTreeJSON(
 			[]string{rootID},
 			map[string]bool{},
 			map[string]bool{},
-			policyCache,
+			cache,
 		)
 	} else {
-		root.Children, err = buildAccountPathJSON(ctx, client, targetAccountID, rootID, managementAccountID, policyCache)
+		root.Children, err = buildAccountPathJSON(ctx, client, targetAccountID, rootID, managementAccountID, cache)
 	}
 	if err != nil {
 		return err
@@ -491,12 +521,13 @@ func buildAccountPathJSON(
 	ctx context.Context,
 	client organizationsClient,
 	targetAccountID, rootID, managementAccountID string,
-	policyCache map[string][]types.PolicySummary,
+	cache *organizationCache,
 ) ([]organizationJSONNode, error) {
 	account, err := getAccount(ctx, client, targetAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("describe account %s: %w", targetAccountID, err)
 	}
+	cache.entityNames[targetAccountID] = aws.ToString(account.Name)
 
 	path := []string{targetAccountID}
 	visited := map[string]bool{targetAccountID: true}
@@ -524,26 +555,34 @@ func buildAccountPathJSON(
 	for index := range path {
 		accountPath[len(path)-1-index] = path[index]
 	}
+
+	ouNodes := make([]organizationJSONNode, 0, len(accountPath)-2)
+	for index := 1; index < len(accountPath)-1; index++ {
+		ouID := accountPath[index]
+		ou, err := getOU(ctx, client, ouID)
+		if err != nil {
+			return nil, fmt.Errorf("get organizational unit %s: %w", ouID, err)
+		}
+		ouName := aws.ToString(ou.Name)
+		cache.entityNames[ouID] = ouName
+		ouNodes = append(ouNodes, organizationJSONNode{
+			Type: "organizational_unit",
+			ID:   ouID,
+			Name: ouName,
+		})
+	}
+
 	accountNode, err := buildAccountJSONNode(
-		ctx, client, targetAccountID, aws.ToString(account.Name), managementAccountID, accountPath, policyCache,
+		ctx, client, targetAccountID, aws.ToString(account.Name), managementAccountID, accountPath, cache,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	child := accountNode
-	for index := 1; index < len(accountPath)-1; index++ {
-		ouID := accountPath[len(accountPath)-1-index]
-		ou, err := getOU(ctx, client, ouID)
-		if err != nil {
-			return nil, fmt.Errorf("get organizational unit %s: %w", ouID, err)
-		}
-		child = organizationJSONNode{
-			Type:     "organizational_unit",
-			ID:       ouID,
-			Name:     aws.ToString(ou.Name),
-			Children: []organizationJSONNode{child},
-		}
+	for index := len(ouNodes) - 1; index >= 0; index-- {
+		ouNodes[index].Children = []organizationJSONNode{child}
+		child = ouNodes[index]
 	}
 	return []organizationJSONNode{child}, nil
 }
@@ -554,7 +593,7 @@ func buildOrganizationJSONChildren(
 	parentID, managementAccountID string,
 	ancestors []string,
 	completed, active map[string]bool,
-	policyCache map[string][]types.PolicySummary,
+	cache *organizationCache,
 ) ([]organizationJSONNode, error) {
 	if active[parentID] {
 		return nil, fmt.Errorf("cycle detected in organization hierarchy at %s", parentID)
@@ -579,8 +618,9 @@ func buildOrganizationJSONChildren(
 		if err != nil {
 			return nil, fmt.Errorf("get account %s: %w", accountID, err)
 		}
+		cache.entityNames[accountID] = aws.ToString(account.Name)
 		node, err := buildAccountJSONNode(
-			ctx, client, accountID, aws.ToString(account.Name), managementAccountID, appendPath(ancestors, accountID), policyCache,
+			ctx, client, accountID, aws.ToString(account.Name), managementAccountID, appendPath(ancestors, accountID), cache,
 		)
 		if err != nil {
 			return nil, err
@@ -605,8 +645,9 @@ func buildOrganizationJSONChildren(
 		if err != nil {
 			return nil, fmt.Errorf("get organizational unit %s: %w", ouID, err)
 		}
+		cache.entityNames[ouID] = aws.ToString(ou.Name)
 		children, err := buildOrganizationJSONChildren(
-			ctx, client, ouID, managementAccountID, appendPath(ancestors, ouID), completed, active, policyCache,
+			ctx, client, ouID, managementAccountID, appendPath(ancestors, ouID), completed, active, cache,
 		)
 		if err != nil {
 			return nil, err
@@ -628,7 +669,7 @@ func buildAccountJSONNode(
 	client organizationsClient,
 	accountID, accountName, managementAccountID string,
 	path []string,
-	policyCache map[string][]types.PolicySummary,
+	cache *organizationCache,
 ) (organizationJSONNode, error) {
 	node := organizationJSONNode{Type: "account", ID: accountID, Name: accountName}
 	if accountID == managementAccountID {
@@ -636,11 +677,12 @@ func buildAccountJSONNode(
 		return node, nil
 	}
 
-	scpNames, err := listSCPsForPath(ctx, client, path, policyCache)
+	scpNames, attachments, err := listSCPsForPath(ctx, client, path, cache)
 	if err != nil {
 		return organizationJSONNode{}, fmt.Errorf("get SCPs for account %s: %w", accountID, err)
 	}
 	node.SCPs = scpNames
+	node.SCPAttachments = attachments
 	return node, nil
 }
 
@@ -653,8 +695,9 @@ func displayOrganizationTreeText(
 	ctx context.Context,
 	writer io.Writer,
 	client organizationsClient,
-	targetAccountID, rootID, managementAccountID string,
+	targetAccountID, rootID, rootName, managementAccountID string,
 ) error {
+	cache := newOrganizationCache(rootID, rootName)
 	if strings.EqualFold(targetAccountID, "all") {
 		if err := writeOutput(writer, "|-- Root: [%s]\n", rootID); err != nil {
 			return err
@@ -669,11 +712,11 @@ func displayOrganizationTreeText(
 			[]string{rootID},
 			map[string]bool{},
 			map[string]bool{},
-			map[string][]types.PolicySummary{},
+			cache,
 		)
 	}
 
-	return printPathToAccount(ctx, writer, client, rootID, targetAccountID, managementAccountID)
+	return printPathToAccount(ctx, writer, client, rootID, targetAccountID, managementAccountID, cache)
 }
 
 func printPathToAccount(
@@ -681,11 +724,13 @@ func printPathToAccount(
 	writer io.Writer,
 	client organizationsClient,
 	rootID, targetAccountID, managementAccountID string,
+	cache *organizationCache,
 ) error {
 	account, err := getAccount(ctx, client, targetAccountID)
 	if err != nil {
 		return fmt.Errorf("describe account %s: %w", targetAccountID, err)
 	}
+	cache.entityNames[targetAccountID] = aws.ToString(account.Name)
 
 	path := []string{targetAccountID}
 	visited := map[string]bool{targetAccountID: true}
@@ -730,6 +775,7 @@ func printPathToAccount(
 			if err := writeOutput(writer, "%s|-- OU: %s [%s]\n", prefix, name, entityID); err != nil {
 				return err
 			}
+			cache.entityNames[entityID] = name
 		default:
 			if err := printAccount(
 				ctx,
@@ -740,7 +786,7 @@ func printPathToAccount(
 				aws.ToString(account.Name),
 				managementAccountID,
 				path,
-				map[string][]types.PolicySummary{},
+				cache,
 			); err != nil {
 				return err
 			}
@@ -759,7 +805,7 @@ func printEntireOrg(
 	parentID, prefix, managementAccountID string,
 	ancestors []string,
 	completed, active map[string]bool,
-	policyCache map[string][]types.PolicySummary,
+	cache *organizationCache,
 ) error {
 	if active[parentID] {
 		return fmt.Errorf("cycle detected in organization hierarchy at %s", parentID)
@@ -784,6 +830,7 @@ func printEntireOrg(
 		if err != nil {
 			return fmt.Errorf("get account %s: %w", childID, err)
 		}
+		cache.entityNames[childID] = aws.ToString(account.Name)
 		accountPath := appendPath(ancestors, childID)
 		if err := printAccount(
 			ctx,
@@ -794,7 +841,7 @@ func printEntireOrg(
 			aws.ToString(account.Name),
 			managementAccountID,
 			accountPath,
-			policyCache,
+			cache,
 		); err != nil {
 			return err
 		}
@@ -818,6 +865,7 @@ func printEntireOrg(
 		if err != nil {
 			return fmt.Errorf("get organizational unit %s: %w", childID, err)
 		}
+		cache.entityNames[childID] = aws.ToString(ou.Name)
 		if err := writeOutput(writer, "%s|-- OU: %s [%s]\n", prefix, aws.ToString(ou.Name), childID); err != nil {
 			return err
 		}
@@ -831,7 +879,7 @@ func printEntireOrg(
 			appendPath(ancestors, childID),
 			completed,
 			active,
-			policyCache,
+			cache,
 		); err != nil {
 			return err
 		}
@@ -853,7 +901,7 @@ func printAccount(
 	client organizationsClient,
 	prefix, accountID, accountName, managementAccountID string,
 	path []string,
-	policyCache map[string][]types.PolicySummary,
+	cache *organizationCache,
 ) error {
 	if accountID == managementAccountID {
 		return writeOutput(
@@ -865,11 +913,41 @@ func printAccount(
 		)
 	}
 
-	scpNames, err := listSCPsForPath(ctx, client, path, policyCache)
+	scpNames, attachments, err := listSCPsForPath(ctx, client, path, cache)
 	if err != nil {
 		return fmt.Errorf("get SCPs for account %s: %w", accountID, err)
 	}
-	return writeOutput(writer, "%s|-- Account: %s [%s] (SCP summary names from account/ancestor attachments: %s)\n", prefix, accountName, accountID, strings.Join(scpNames, ", "))
+	if err := writeOutput(
+		writer,
+		"%s|-- Account: %s [%s] (SCP summary names from account/ancestor attachments: %s)\n",
+		prefix,
+		accountName,
+		accountID,
+		strings.Join(scpNames, ", "),
+	); err != nil {
+		return err
+	}
+	for _, attachment := range attachments {
+		targetName := ""
+		if attachment.AttachedTo.Name != "" {
+			targetName = " " + attachment.AttachedTo.Name
+		}
+		if err := writeOutput(
+			writer,
+			"%s%s|-- SCP: %s [%s] (Attached to: %s%s [%s]; Inherited: %t)\n",
+			prefix,
+			indent,
+			attachment.PolicyName,
+			attachment.PolicyID,
+			attachment.AttachedTo.Type,
+			targetName,
+			attachment.AttachedTo.ID,
+			attachment.Inherited,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // listChildren lists all children of the requested type, across every response page.
@@ -992,35 +1070,41 @@ func getManagementAccountID(ctx context.Context, client organizationsClient) (st
 	return managementAccountID, nil
 }
 
-// getRootID returns the organization's only root after consuming all response pages.
-func getRootID(ctx context.Context, client organizations.ListRootsAPIClient) (string, error) {
+// getRoot returns the organization's only root after consuming all response pages.
+func getRoot(ctx context.Context, client organizations.ListRootsAPIClient) (string, string, error) {
 	paginator := organizations.NewListRootsPaginator(client, &organizations.ListRootsInput{})
 
-	rootIDs := make(map[string]bool)
+	rootNamesByID := make(map[string]string)
 	seenTokens := make(map[string]bool)
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if err := rejectRepeatedToken(seenTokens, page.NextToken, "ListRoots"); err != nil {
-			return "", err
+			return "", "", err
 		}
 		for _, root := range page.Roots {
 			rootID := aws.ToString(root.Id)
 			if rootID == "" {
-				return "", errors.New("organization root has no ID")
+				return "", "", errors.New("organization root has no ID")
 			}
-			rootIDs[rootID] = true
+			rootName := aws.ToString(root.Name)
+			if existingName, found := rootNamesByID[rootID]; found && existingName != "" && rootName != "" && existingName != rootName {
+				return "", "", fmt.Errorf("organization root %s has conflicting names %q and %q", rootID, existingName, rootName)
+			}
+			if _, found := rootNamesByID[rootID]; !found || rootNamesByID[rootID] == "" {
+				rootNamesByID[rootID] = rootName
+			}
 		}
 	}
-	if len(rootIDs) != 1 {
-		return "", fmt.Errorf("expected exactly one organization root, got %d", len(rootIDs))
+	if len(rootNamesByID) != 1 {
+		return "", "", fmt.Errorf("expected exactly one organization root, got %d", len(rootNamesByID))
 	}
-	for rootID := range rootIDs {
-		return rootID, nil
+	for rootID, rootName := range rootNamesByID {
+		return rootID, rootName, nil
 	}
-	return "", errors.New("no roots found in the organization")
+	return "", "", errors.New("no roots found in the organization")
 }
 
 func getNameByID(ctx context.Context, client organizationsClient, entityID string) (string, error) {
@@ -1083,44 +1167,91 @@ func listParents(ctx context.Context, client organizations.ListParentsAPIClient,
 	return parents, nil
 }
 
-// listSCPsForPath lists names from SCP summaries for direct attachments along one known hierarchy path.
+// listSCPsForPath lists SCP summary names and attachment provenance along one known hierarchy path.
 func listSCPsForPath(
 	ctx context.Context,
 	client organizationsClient,
 	path []string,
-	policyCache map[string][]types.PolicySummary,
-) ([]string, error) {
+	cache *organizationCache,
+) ([]string, []scpAttachment, error) {
 	namesByID := make(map[string]string)
-	IDsByName := make(map[string]string)
-	var scpNames []string
+	legacyNames := make(map[string]bool)
+	seenAttachments := make(map[[2]string]bool)
+	pathIndexes := make(map[string]int, len(path))
+	attachments := make([]scpAttachment, 0)
+	for index, entityID := range path {
+		pathIndexes[entityID] = index
+	}
+	accountID := path[len(path)-1]
 	for _, entityID := range path {
-		policies, found := policyCache[entityID]
+		policies, found := cache.policiesByTarget[entityID]
 		if !found {
 			var err error
 			policies, err = listSCPsForTarget(ctx, client, entityID)
 			if err != nil {
-				return nil, fmt.Errorf("list SCPs for %s: %w", entityID, err)
+				return nil, nil, fmt.Errorf("list SCPs for %s: %w", entityID, err)
 			}
-			policyCache[entityID] = policies
+			cache.policiesByTarget[entityID] = policies
 		}
 		for _, policy := range policies {
 			policyID := aws.ToString(policy.Id)
 			policyName := aws.ToString(policy.Name)
 			if existingName, found := namesByID[policyID]; found && existingName != policyName {
-				return nil, fmt.Errorf("SCP %s has conflicting names %q and %q", policyID, existingName, policyName)
-			}
-			if existingID, found := IDsByName[policyName]; found && existingID != policyID {
-				return nil, fmt.Errorf("SCP name %q has conflicting IDs %s and %s", policyName, existingID, policyID)
+				return nil, nil, fmt.Errorf("SCP %s has conflicting names %q and %q", policyID, existingName, policyName)
 			}
 			if _, found := namesByID[policyID]; !found {
 				namesByID[policyID] = policyName
-				IDsByName[policyName] = policyID
-				scpNames = append(scpNames, policyName)
 			}
+			legacyNames[policyName] = true
+
+			attachmentKey := [2]string{policyID, entityID}
+			if seenAttachments[attachmentKey] {
+				continue
+			}
+			seenAttachments[attachmentKey] = true
+			attachments = append(attachments, scpAttachment{
+				PolicyID:   policyID,
+				PolicyName: policyName,
+				AttachedTo: scpAttachmentTarget{
+					Type: entityType(entityID),
+					ID:   entityID,
+					Name: cache.entityNames[entityID],
+				},
+				Inherited: entityID != accountID,
+			})
 		}
 	}
+	scpNames := make([]string, 0, len(legacyNames))
+	for policyName := range legacyNames {
+		scpNames = append(scpNames, policyName)
+	}
 	sort.Strings(scpNames)
-	return scpNames, nil
+	sort.Slice(attachments, func(left, right int) bool {
+		if attachments[left].PolicyName != attachments[right].PolicyName {
+			return attachments[left].PolicyName < attachments[right].PolicyName
+		}
+		if attachments[left].PolicyID != attachments[right].PolicyID {
+			return attachments[left].PolicyID < attachments[right].PolicyID
+		}
+		leftPathIndex := pathIndexes[attachments[left].AttachedTo.ID]
+		rightPathIndex := pathIndexes[attachments[right].AttachedTo.ID]
+		if leftPathIndex != rightPathIndex {
+			return leftPathIndex < rightPathIndex
+		}
+		return attachments[left].AttachedTo.ID < attachments[right].AttachedTo.ID
+	})
+	return scpNames, attachments, nil
+}
+
+func entityType(entityID string) string {
+	switch {
+	case strings.HasPrefix(entityID, "r-"):
+		return "root"
+	case strings.HasPrefix(entityID, "ou-"):
+		return "organizational_unit"
+	default:
+		return "account"
+	}
 }
 
 func validateAccountID(value string) error {
