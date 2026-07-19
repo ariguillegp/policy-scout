@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1469,6 +1470,7 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 	)
 	listCalls := make(map[string]int)
 	policyCalls := make(map[string]int)
+	var policyCallsMu sync.Mutex
 	client := &fakeOrganizationsClient{
 		listChildrenFn: func(_ context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
 			key := aws.ToString(input.ParentId) + ":" + string(input.ChildType)
@@ -1511,6 +1513,8 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 		},
 		listPoliciesForTargetFn: func(_ context.Context, input *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
 			targetID := aws.ToString(input.TargetId)
+			policyCallsMu.Lock()
+			defer policyCallsMu.Unlock()
 			policyCalls[targetID]++
 			return &organizations.ListPoliciesForTargetOutput{}, nil
 		},
@@ -1529,11 +1533,16 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 	if len(listCalls) != 4 {
 		t.Fatalf("got %d children lookups, want 4", len(listCalls))
 	}
-	if policyCalls[managementAccount] != 0 {
-		t.Fatalf("management account policies queried %d times", policyCalls[managementAccount])
+	policyCallsMu.Lock()
+	managementPolicyCalls := policyCalls[managementAccount]
+	rootPolicyCalls := policyCalls[rootID]
+	ouPolicyCalls := policyCalls[ouID]
+	policyCallsMu.Unlock()
+	if managementPolicyCalls != 0 {
+		t.Fatalf("management account policies queried %d times", managementPolicyCalls)
 	}
-	if policyCalls[rootID] != 1 || policyCalls[ouID] != 1 {
-		t.Fatalf("shared ancestor policy calls: root=%d OU=%d, want 1 each", policyCalls[rootID], policyCalls[ouID])
+	if rootPolicyCalls != 1 || ouPolicyCalls != 1 {
+		t.Fatalf("shared ancestor policy calls: root=%d OU=%d, want 1 each", rootPolicyCalls, ouPolicyCalls)
 	}
 	want := "|-- Root: [r-root]\n" +
 		"    |-- Account: Management (Management Account) [111111111111] (SCPs do not affect management-account users or roles)\n" +
@@ -1565,6 +1574,219 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 	organizationalUnit := result.Children[1]
 	if organizationalUnit.ID != ouID || len(organizationalUnit.Children) != 2 {
 		t.Fatalf("unexpected organizational unit: %+v", organizationalUnit)
+	}
+}
+
+func TestFullOrganizationInspectionUsesBoundedConcurrencyAndDeterministicOrder(t *testing.T) {
+	t.Parallel()
+
+	const (
+		rootID       = "r-root"
+		accountCount = 64
+	)
+	accountIDs := make([]string, accountCount)
+	accountChildren := make([]types.Child, accountCount)
+	for index := range accountCount {
+		accountIDs[index] = fmt.Sprintf("%012d", 100000000000+index)
+		accountChildren[index] = types.Child{Id: aws.String(accountIDs[index]), Type: types.ChildTypeAccount}
+	}
+
+	entered := make(chan struct{}, accountCount)
+	release := make(chan struct{})
+	policyCalls := make(map[string]int, accountCount+1)
+	var callsMu sync.Mutex
+	activeCalls := 0
+	peakCalls := 0
+	client := &fakeOrganizationsClient{
+		listChildrenFn: func(_ context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+			if aws.ToString(input.ParentId) != rootID {
+				return nil, errors.New("unexpected parent")
+			}
+			if input.ChildType == types.ChildTypeAccount {
+				return &organizations.ListChildrenOutput{Children: accountChildren}, nil
+			}
+			return &organizations.ListChildrenOutput{}, nil
+		},
+		describeAccountFn: func(ctx context.Context, input *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+			callsMu.Lock()
+			activeCalls++
+			peakCalls = max(peakCalls, activeCalls)
+			callsMu.Unlock()
+			defer func() {
+				callsMu.Lock()
+				activeCalls--
+				callsMu.Unlock()
+			}()
+
+			entered <- struct{}{}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-release:
+				accountID := aws.ToString(input.AccountId)
+				return &organizations.DescribeAccountOutput{Account: &types.Account{
+					Id: input.AccountId, Name: aws.String("Account " + accountID),
+				}}, nil
+			}
+		},
+		listPoliciesForTargetFn: func(_ context.Context, input *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			callsMu.Lock()
+			policyCalls[aws.ToString(input.TargetId)]++
+			callsMu.Unlock()
+			return &organizations.ListPoliciesForTargetOutput{}, nil
+		},
+	}
+
+	var output bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- displayOrganizationTreeJSON(
+			context.Background(), &output, client, "all", rootID, "Organization Root", "999999999999",
+		)
+	}()
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for range organizationInspectionConcurrency {
+		select {
+		case <-entered:
+		case <-timer.C:
+			close(release)
+			t.Fatal("full-organization inspection did not issue concurrent account calls")
+		}
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("inspect organization: %v", err)
+		}
+	case <-timer.C:
+		t.Fatal("full-organization inspection did not finish")
+	}
+
+	callsMu.Lock()
+	gotPeakCalls := peakCalls
+	gotActiveCalls := activeCalls
+	gotPolicyCalls := make(map[string]int, len(policyCalls))
+	for targetID, calls := range policyCalls {
+		gotPolicyCalls[targetID] = calls
+	}
+	callsMu.Unlock()
+	if gotPeakCalls != organizationInspectionConcurrency {
+		t.Fatalf("peak concurrent AWS calls = %d, want fixed bound %d", gotPeakCalls, organizationInspectionConcurrency)
+	}
+	if gotActiveCalls != 0 {
+		t.Fatalf("active AWS calls after completion = %d, want 0", gotActiveCalls)
+	}
+	if gotPolicyCalls[rootID] != 1 {
+		t.Fatalf("root policies listed %d times, want once", gotPolicyCalls[rootID])
+	}
+	for _, accountID := range accountIDs {
+		if gotPolicyCalls[accountID] != 1 {
+			t.Fatalf("account %s policies listed %d times, want once", accountID, gotPolicyCalls[accountID])
+		}
+	}
+
+	var result organizationJSONNode
+	if err := encodingjson.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("decode organization JSON: %v", err)
+	}
+	if len(result.Children) != accountCount {
+		t.Fatalf("organization contains %d accounts, want %d", len(result.Children), accountCount)
+	}
+	for index, node := range result.Children {
+		if node.ID != accountIDs[index] {
+			t.Fatalf("account at output index %d is %s, want %s", index, node.ID, accountIDs[index])
+		}
+	}
+}
+
+func TestFullOrganizationInspectionCancelsOnFailureWithoutPartialText(t *testing.T) {
+	t.Parallel()
+
+	const rootID = "r-root"
+	accountChildren := make([]types.Child, 16)
+	for index := range accountChildren {
+		accountID := fmt.Sprintf("%012d", 200000000000+index)
+		accountChildren[index] = types.Child{Id: aws.String(accountID), Type: types.ChildTypeAccount}
+	}
+	failingAccountID := aws.ToString(accountChildren[0].Id)
+	inspectionFailure := errors.New("account inspection failed")
+	entered := make(chan string, len(accountChildren))
+	canceled := make(chan string, len(accountChildren))
+	proceed := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWorkers := func() {
+		releaseOnce.Do(func() { close(proceed) })
+	}
+	defer releaseWorkers()
+
+	client := &fakeOrganizationsClient{
+		listChildrenFn: func(_ context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+			if input.ChildType == types.ChildTypeAccount {
+				return &organizations.ListChildrenOutput{Children: accountChildren}, nil
+			}
+			return &organizations.ListChildrenOutput{}, nil
+		},
+		describeAccountFn: func(ctx context.Context, input *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+			accountID := aws.ToString(input.AccountId)
+			entered <- accountID
+			select {
+			case <-ctx.Done():
+				canceled <- accountID
+				return nil, ctx.Err()
+			case <-proceed:
+			}
+			if accountID == failingAccountID {
+				return nil, inspectionFailure
+			}
+			<-ctx.Done()
+			canceled <- accountID
+			return nil, ctx.Err()
+		},
+		listPoliciesForTargetFn: func(context.Context, *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			return nil, errors.New("policy lookup must not start before account descriptions finish")
+		},
+	}
+
+	var output bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- displayOrganizationTreeText(
+			context.Background(), &output, client, "all", rootID, "Organization Root", "999999999999",
+		)
+	}()
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	started := make(map[string]bool, organizationInspectionConcurrency)
+	for range organizationInspectionConcurrency {
+		select {
+		case accountID := <-entered:
+			started[accountID] = true
+		case <-timer.C:
+			t.Fatal("full-organization inspection did not fill its worker bound")
+		}
+	}
+	if !started[failingAccountID] {
+		t.Fatalf("failing account %s was not among initial workers: %v", failingAccountID, started)
+	}
+	releaseWorkers()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, inspectionFailure) {
+			t.Fatalf("inspection error = %v, want %v", err, inspectionFailure)
+		}
+	case <-timer.C:
+		t.Fatal("full-organization inspection did not cancel in-flight calls")
+	}
+	if len(canceled) != organizationInspectionConcurrency-1 {
+		t.Fatalf("canceled in-flight account calls = %d, want %d", len(canceled), organizationInspectionConcurrency-1)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("failed inspection wrote partial output: %q", output.String())
 	}
 }
 
