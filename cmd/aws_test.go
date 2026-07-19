@@ -794,18 +794,24 @@ func TestWriteAWSAuthStatusJSON(t *testing.T) {
 	}
 }
 
-func TestListChildrenPaginates(t *testing.T) {
+func TestListChildrenPaginatesAndSortsByID(t *testing.T) {
 	t.Parallel()
 
 	client := &fakeOrganizationsClient{
 		listChildrenFn: func(_ context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
 			if input.NextToken == nil {
 				return &organizations.ListChildrenOutput{
-					Children:  []types.Child{{Id: aws.String("111111111111"), Type: types.ChildTypeAccount}},
+					Children: []types.Child{
+						{Id: aws.String("333333333333"), Type: types.ChildTypeAccount},
+						{Id: aws.String("111111111111"), Type: types.ChildTypeAccount},
+					},
 					NextToken: aws.String("next"),
 				}, nil
 			}
-			return &organizations.ListChildrenOutput{Children: []types.Child{{Id: aws.String("222222222222"), Type: types.ChildTypeAccount}}}, nil
+			return &organizations.ListChildrenOutput{Children: []types.Child{
+				{Id: aws.String("222222222222"), Type: types.ChildTypeAccount},
+				{Id: aws.String("111111111111"), Type: types.ChildTypeAccount},
+			}}, nil
 		},
 	}
 
@@ -813,8 +819,206 @@ func TestListChildrenPaginates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list children: %v", err)
 	}
-	if len(children) != 2 {
-		t.Fatalf("got %d children, want 2", len(children))
+	got := make([]string, len(children))
+	for index, child := range children {
+		got[index] = aws.ToString(child.Id)
+	}
+	want := []string{"111111111111", "222222222222", "333333333333"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("children are %v, want %v", got, want)
+	}
+}
+
+func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.T) {
+	t.Parallel()
+
+	const (
+		rootID            = "r-root"
+		managementAccount = "111111111111"
+	)
+
+	newClient := func(scrambled bool) *fakeOrganizationsClient {
+		pages := map[string][][]string{
+			rootID + ":ACCOUNT": {
+				{"333333333333", managementAccount},
+				{"222222222222"},
+			},
+			rootID + ":ORGANIZATIONAL_UNIT": {
+				{"ou-root-bbbb2222"},
+				{"ou-root-aaaa1111"},
+			},
+			"ou-root-aaaa1111:ACCOUNT": {
+				{"555555555555"},
+				{"444444444444"},
+			},
+			"ou-root-aaaa1111:ORGANIZATIONAL_UNIT": {
+				{"ou-root-dddd4444"},
+				{"ou-root-cccc3333"},
+			},
+			"ou-root-bbbb2222:ACCOUNT":             {{}},
+			"ou-root-bbbb2222:ORGANIZATIONAL_UNIT": {{}},
+			"ou-root-cccc3333:ACCOUNT":             {{}},
+			"ou-root-cccc3333:ORGANIZATIONAL_UNIT": {{}},
+			"ou-root-dddd4444:ACCOUNT":             {{}},
+			"ou-root-dddd4444:ORGANIZATIONAL_UNIT": {{}},
+		}
+		if scrambled {
+			pages[rootID+":ACCOUNT"] = [][]string{{"222222222222"}, {managementAccount, "333333333333"}}
+			pages[rootID+":ORGANIZATIONAL_UNIT"] = [][]string{{"ou-root-aaaa1111"}, {"ou-root-bbbb2222"}}
+			pages["ou-root-aaaa1111:ACCOUNT"] = [][]string{{"444444444444"}, {"555555555555"}}
+			pages["ou-root-aaaa1111:ORGANIZATIONAL_UNIT"] = [][]string{{"ou-root-cccc3333"}, {"ou-root-dddd4444"}}
+		}
+
+		return &fakeOrganizationsClient{
+			listChildrenFn: func(_ context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+				key := aws.ToString(input.ParentId) + ":" + string(input.ChildType)
+				responsePages, ok := pages[key]
+				if !ok {
+					return nil, fmt.Errorf("unexpected children lookup %s", key)
+				}
+				pageIndex := 0
+				if input.NextToken != nil {
+					expectedToken := key + ":1"
+					if aws.ToString(input.NextToken) != expectedToken {
+						return nil, fmt.Errorf("unexpected pagination token %q for %s", aws.ToString(input.NextToken), key)
+					}
+					pageIndex = 1
+				}
+				if pageIndex >= len(responsePages) {
+					return nil, fmt.Errorf("unexpected page %d for %s", pageIndex, key)
+				}
+				children := make([]types.Child, 0, len(responsePages[pageIndex]))
+				for _, id := range responsePages[pageIndex] {
+					children = append(children, types.Child{Id: aws.String(id), Type: input.ChildType})
+				}
+				output := &organizations.ListChildrenOutput{Children: children}
+				if pageIndex+1 < len(responsePages) {
+					output.NextToken = aws.String(key + ":1")
+				}
+				return output, nil
+			},
+			describeAccountFn: func(_ context.Context, input *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+				id := aws.ToString(input.AccountId)
+				return &organizations.DescribeAccountOutput{Account: &types.Account{Id: input.AccountId, Name: aws.String("Account " + id)}}, nil
+			},
+			describeOrganizationalUnit: func(_ context.Context, input *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error) {
+				id := aws.ToString(input.OrganizationalUnitId)
+				return &organizations.DescribeOrganizationalUnitOutput{OrganizationalUnit: &types.OrganizationalUnit{
+					Id: input.OrganizationalUnitId, Name: aws.String("OU " + id),
+				}}, nil
+			},
+			listPoliciesForTargetFn: func(context.Context, *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+				return &organizations.ListPoliciesForTargetOutput{}, nil
+			},
+		}
+	}
+
+	wantJSON := `{
+  "schema_version": "1",
+  "type": "root",
+  "id": "r-root",
+  "children": [
+    {
+      "type": "account",
+      "id": "111111111111",
+      "name": "Account 111111111111",
+      "management_account": true
+    },
+    {
+      "type": "account",
+      "id": "222222222222",
+      "name": "Account 222222222222"
+    },
+    {
+      "type": "account",
+      "id": "333333333333",
+      "name": "Account 333333333333"
+    },
+    {
+      "type": "organizational_unit",
+      "id": "ou-root-aaaa1111",
+      "name": "OU ou-root-aaaa1111",
+      "children": [
+        {
+          "type": "account",
+          "id": "444444444444",
+          "name": "Account 444444444444"
+        },
+        {
+          "type": "account",
+          "id": "555555555555",
+          "name": "Account 555555555555"
+        },
+        {
+          "type": "organizational_unit",
+          "id": "ou-root-cccc3333",
+          "name": "OU ou-root-cccc3333"
+        },
+        {
+          "type": "organizational_unit",
+          "id": "ou-root-dddd4444",
+          "name": "OU ou-root-dddd4444"
+        }
+      ]
+    },
+    {
+      "type": "organizational_unit",
+      "id": "ou-root-bbbb2222",
+      "name": "OU ou-root-bbbb2222"
+    }
+  ]
+}
+`
+	wantText := "|-- Root: [r-root]\n" +
+		"    |-- Account: Account 111111111111 (Management Account) [111111111111] (SCPs do not affect management-account users or roles)\n" +
+		"    |-- Account: Account 222222222222 [222222222222] (SCP summary names from account/ancestor attachments: )\n" +
+		"    |-- Account: Account 333333333333 [333333333333] (SCP summary names from account/ancestor attachments: )\n" +
+		"    |-- OU: OU ou-root-aaaa1111 [ou-root-aaaa1111]\n" +
+		"        |-- Account: Account 444444444444 [444444444444] (SCP summary names from account/ancestor attachments: )\n" +
+		"        |-- Account: Account 555555555555 [555555555555] (SCP summary names from account/ancestor attachments: )\n" +
+		"        |-- OU: OU ou-root-cccc3333 [ou-root-cccc3333]\n" +
+		"        |-- OU: OU ou-root-dddd4444 [ou-root-dddd4444]\n" +
+		"    |-- OU: OU ou-root-bbbb2222 [ou-root-bbbb2222]\n"
+
+	tests := []struct {
+		format outputFormat
+		want   string
+	}{
+		{format: json, want: wantJSON},
+		{format: text, want: wantText},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(string(test.format), func(t *testing.T) {
+			t.Parallel()
+
+			var first bytes.Buffer
+			var second bytes.Buffer
+			if test.format == json {
+				if err := displayOrganizationTreeJSON(context.Background(), &first, newClient(false), "all", rootID, "Root", managementAccount); err != nil {
+					t.Fatalf("render first JSON output: %v", err)
+				}
+				if err := displayOrganizationTreeJSON(context.Background(), &second, newClient(true), "all", rootID, "Root", managementAccount); err != nil {
+					t.Fatalf("render second JSON output: %v", err)
+				}
+			} else {
+				if err := displayOrganizationTreeText(context.Background(), &first, newClient(false), "all", rootID, "Root", managementAccount); err != nil {
+					t.Fatalf("render first text output: %v", err)
+				}
+				if err := displayOrganizationTreeText(context.Background(), &second, newClient(true), "all", rootID, "Root", managementAccount); err != nil {
+					t.Fatalf("render second text output: %v", err)
+				}
+			}
+			if first.String() != test.want {
+				t.Fatalf("first %s output:\n%s\nwant:\n%s", test.format, first.String(), test.want)
+			}
+			if second.String() != test.want {
+				t.Fatalf("second %s output:\n%s\nwant:\n%s", test.format, second.String(), test.want)
+			}
+			if !bytes.Equal(first.Bytes(), second.Bytes()) {
+				t.Fatalf("%s output changed with AWS child order:\nfirst:\n%s\nsecond:\n%s", test.format, first.Bytes(), second.Bytes())
+			}
+		})
 	}
 }
 

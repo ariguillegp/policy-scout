@@ -211,6 +211,8 @@ JSON output is a tree rooted at the AWS organization root. Nodes use these field
   - `inherited`: `false` only when the policy is attached directly to the reported account; otherwise `true`.
 - `children`: nested organization nodes.
 
+For full-organization output (`--account-id all`), both JSON and text order children deterministically: accounts come before organizational units under each parent, and each category is sorted by AWS entity ID. This order is independent of AWS response pagination and ordering.
+
 `scp_attachments` contains one item per unique policy-ID/attachment-target pair. This preserves multiple attachment locations for one policy and distinguishes different policy IDs that share a name. Its ordering is deterministic by policy name, policy ID, and then attachment position from root to account. The legacy `scps` array remains sorted and de-duplicated by name, so duplicate names must be disambiguated through `scp_attachments`.
 
 Fields that do not apply or contain no values may be omitted. SCP fields are omitted for the management account because SCPs do not affect its users or roles. Policy Scout lists policy summaries attached to each hierarchy target; it does not retrieve or evaluate policy documents. The successful JSON document is not wrapped in a status envelope.

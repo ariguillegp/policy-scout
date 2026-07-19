@@ -1032,7 +1032,8 @@ func printAccount(
 	return nil
 }
 
-// listChildren lists all children of the requested type, across every response page.
+// listChildren lists all children of the requested type across every response page,
+// sorted by ID so callers do not depend on AWS response ordering.
 func listChildren(ctx context.Context, client organizations.ListChildrenAPIClient, parentID string, childType types.ChildType) ([]types.Child, error) {
 	input := &organizations.ListChildrenInput{ParentId: &parentID, ChildType: childType}
 	paginator := organizations.NewListChildrenPaginator(client, input)
@@ -1062,6 +1063,9 @@ func listChildren(ctx context.Context, client organizations.ListChildrenAPIClien
 			}
 		}
 	}
+	sort.Slice(children, func(left, right int) bool {
+		return aws.ToString(children[left].Id) < aws.ToString(children[right].Id)
+	})
 	return children, nil
 }
 
