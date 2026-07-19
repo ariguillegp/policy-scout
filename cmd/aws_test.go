@@ -314,6 +314,36 @@ func TestCommandContractIsAutomationFriendly(t *testing.T) {
 	}
 }
 
+func TestRootHelpSurfacesAWSAndAuthStatusExamples(t *testing.T) {
+	// Help rendering mutates the command's output writer, so this test is
+	// intentionally not parallel (matches cmd/help_test.go conventions).
+	var help bytes.Buffer
+	rootCmd.SetOut(&help)
+	defer rootCmd.SetOut(nil)
+	if err := rootCmd.Help(); err != nil {
+		t.Fatalf("render root help: %v", err)
+	}
+	output := help.String()
+
+	for _, expected := range []string{
+		"Inspect cloud organization policies from one CLI",
+		"policy-scout aws auth status",
+		"policy-scout aws auth status --output-format text",
+		"policy-scout aws --account-id 123456789012",
+		"policy-scout aws --account-id all --output-format text",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("root help does not surface %q:\n%s", expected, output)
+		}
+	}
+
+	for _, hidden := range []string{"multi-cloud", "gcp", "azure"} {
+		if strings.Contains(output, hidden) {
+			t.Errorf("root help unexpectedly advertises %q:\n%s", hidden, output)
+		}
+	}
+}
+
 func TestAddSSORemediation(t *testing.T) {
 	t.Parallel()
 
