@@ -166,6 +166,22 @@ func TestOutputFormatSupportsTextAndJSONOnly(t *testing.T) {
 	}
 }
 
+func TestOrganizationJSONNodePreservesSCPsFieldName(t *testing.T) {
+	t.Parallel()
+
+	data, err := encodingjson.Marshal(organizationJSONNode{Type: "account", ID: "123456789012", SCPs: []string{"DenyS3"}})
+	if err != nil {
+		t.Fatalf("encode account: %v", err)
+	}
+	var fields map[string]encodingjson.RawMessage
+	if err := encodingjson.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("decode account fields: %v", err)
+	}
+	if _, found := fields["scps"]; !found {
+		t.Fatalf("JSON account does not contain compatibility field %q: %s", "scps", data)
+	}
+}
+
 func TestCommandContractIsAutomationFriendly(t *testing.T) {
 	profileFlag := awsCmd.PersistentFlags().Lookup("profile")
 	if profileFlag == nil {
@@ -208,6 +224,15 @@ func TestCommandContractIsAutomationFriendly(t *testing.T) {
 		"credential chain are unchanged",
 		"--timeout",
 		"--max-retries",
+		"direct attachments to an account",
+		"root/OU in its ancestor path",
+		"does not retrieve policy documents",
+		"SCP Allow/Deny",
+		"IAM policies",
+		"resource policies",
+		"permission boundaries",
+		"session policies",
+		"effective identity permissions",
 		"policy-scout aws --account-id 123456789012",
 	} {
 		if !strings.Contains(help.String(), expected) {
@@ -828,7 +853,7 @@ func TestPrintPathToAccountWalksUpwardAndListsInheritedPolicies(t *testing.T) {
 	}
 	want := "|-- Root: [r-root]\n" +
 		"    |-- OU: Production [ou-root-12345678]\n" +
-		"        |-- Account: Application [123456789012] (SCPs: DenyS3, FullAWSAccess)\n"
+		"        |-- Account: Application [123456789012] (SCP summary names from account/ancestor attachments: DenyS3, FullAWSAccess)\n"
 	if output.String() != want {
 		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output.String(), want)
 	}
@@ -1004,7 +1029,7 @@ func TestManagementAccountDoesNotListSCPs(t *testing.T) {
 	if policyCalls != 0 {
 		t.Fatalf("policy API called %d times", policyCalls)
 	}
-	want := "|-- Account: Management (Management Account) [123456789012] (SCPs: not enforced)\n"
+	want := "|-- Account: Management (Management Account) [123456789012] (SCPs do not affect management-account users or roles)\n"
 	if output.String() != want {
 		t.Fatalf("unexpected output: %s, want: %s", output.String(), want)
 	}
@@ -1089,10 +1114,10 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 		t.Fatalf("shared ancestor policy calls: root=%d OU=%d, want 1 each", policyCalls[rootID], policyCalls[ouID])
 	}
 	want := "|-- Root: [r-root]\n" +
-		"    |-- Account: Management (Management Account) [111111111111] (SCPs: not enforced)\n" +
+		"    |-- Account: Management (Management Account) [111111111111] (SCPs do not affect management-account users or roles)\n" +
 		"    |-- OU: Production [ou-root-12345678]\n" +
-		"        |-- Account: Member [222222222222] (SCPs: )\n" +
-		"        |-- Account: Member [333333333333] (SCPs: )\n"
+		"        |-- Account: Member [222222222222] (SCP summary names from account/ancestor attachments: )\n" +
+		"        |-- Account: Member [333333333333] (SCP summary names from account/ancestor attachments: )\n"
 	if output.String() != want {
 		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output.String(), want)
 	}

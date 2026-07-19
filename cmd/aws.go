@@ -94,10 +94,15 @@ var (
 	authStatusFormat outputFormat = json
 	awsCmd                        = &cobra.Command{
 		Use:   "aws --account-id <12-digit-id|all>",
-		Short: "Show AWS organization paths and effective SCPs",
-		Long: `Show the AWS Organizations hierarchy and the inherited and directly
-attached service control policies (SCPs) for one account or the entire
+		Short: "Show AWS paths and SCP summary names from account/ancestor attachments",
+		Long: `Show the AWS Organizations hierarchy and names from service control
+policy (SCP) summaries returned for direct attachments to an account or to a
+root/OU in its ancestor path. Inspect one account or every account in the
 organization. JSON output is used by default.
+
+Policy Scout does not retrieve policy documents or evaluate SCP Allow/Deny
+semantics, IAM policies, resource policies, permission boundaries,
+session policies, or effective identity permissions.
 
 Credentials and region configuration are loaded from the AWS SDK default
 configuration chain. Use --profile to select a named AWS shared-config profile;
@@ -853,7 +858,7 @@ func printAccount(
 	if accountID == managementAccountID {
 		return writeOutput(
 			writer,
-			"%s|-- Account: %s (Management Account) [%s] (SCPs: not enforced)\n",
+			"%s|-- Account: %s (Management Account) [%s] (SCPs do not affect management-account users or roles)\n",
 			prefix,
 			accountName,
 			accountID,
@@ -864,7 +869,7 @@ func printAccount(
 	if err != nil {
 		return fmt.Errorf("get SCPs for account %s: %w", accountID, err)
 	}
-	return writeOutput(writer, "%s|-- Account: %s [%s] (SCPs: %s)\n", prefix, accountName, accountID, strings.Join(scpNames, ", "))
+	return writeOutput(writer, "%s|-- Account: %s [%s] (SCP summary names from account/ancestor attachments: %s)\n", prefix, accountName, accountID, strings.Join(scpNames, ", "))
 }
 
 // listChildren lists all children of the requested type, across every response page.
@@ -1078,7 +1083,7 @@ func listParents(ctx context.Context, client organizations.ListParentsAPIClient,
 	return parents, nil
 }
 
-// listSCPsForPath lists the direct and inherited SCP names for one known hierarchy path.
+// listSCPsForPath lists names from SCP summaries for direct attachments along one known hierarchy path.
 func listSCPsForPath(
 	ctx context.Context,
 	client organizationsClient,

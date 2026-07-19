@@ -1,6 +1,6 @@
 # policy-scout
 
-Explore AWS Organizations service control policies (SCPs) from a terminal. Policy Scout shows where an account sits in the organization and which SCPs it inherits, without requiring several AWS CLI calls or manual console navigation.
+Explore AWS Organizations service control policy (SCP) attachments from a terminal. Policy Scout shows where an account sits in the organization and names from SCP summaries directly attached to that account or to a root/OU in its ancestor path, without requiring several AWS CLI calls or manual console navigation.
 
 ## Table of Contents
 
@@ -17,9 +17,11 @@ Explore AWS Organizations service control policies (SCPs) from a terminal. Polic
 ## Features
 
 - Display one account's path from the organization root, or the complete tree with `--account-id all`.
-- Display directly attached and inherited SCPs for every returned member account.
-- Identify the management account, where SCPs are not enforced.
+- Display names from SCP summaries for direct attachments to each returned member account and its ancestors.
+- Identify the management account, whose users and roles are not affected by SCPs.
 - Produce structured `json` (default) or a human-readable `text` tree.
+
+Policy Scout lists SCP summary names; it does not retrieve policy documents or evaluate SCP Allow/Deny semantics, IAM policies, resource policies, permission boundaries, session policies, or effective identity permissions.
 
 ## Prerequisites
 
@@ -156,7 +158,7 @@ JSON output is a tree rooted at the AWS organization root. Nodes use these field
 - `id`: the AWS entity ID.
 - `name`: the entity name, when applicable.
 - `management_account`: `true` for the management account.
-- `scps`: sorted, de-duplicated effective SCP names for a member account.
+- `scps`: sorted, de-duplicated names from SCP summaries directly attached to a member account or to a root/OU in its ancestor path. The attachment source is not preserved. The field name is retained for JSON compatibility and does not represent evaluated effective permissions.
 - `children`: nested organization nodes.
 
 Fields that do not apply or contain no values may be omitted. The successful JSON document is not wrapped in a status envelope.
@@ -190,7 +192,7 @@ Text output renders the same hierarchy as a tree:
 |-- Root: [r-cww9]
     |-- OU: Prod [ou-cww9-36h7ub42]
         |-- OU: Finance [ou-cww9-x2atbcle]
-            |-- Account: aws-child1 [339712974046] (SCPs: DenyAccessS3, FullAWSAccess)
+            |-- Account: aws-child1 [339712974046] (SCP summary names from account/ancestor attachments: DenyAccessS3, FullAWSAccess)
 ```
 
 ## Version and JSON compatibility
