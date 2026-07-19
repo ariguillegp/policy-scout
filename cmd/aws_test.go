@@ -5,15 +5,18 @@ import (
 	"context"
 	encodingjson "encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsretry "github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/spf13/cobra"
 )
 
 type fakeSTSClient struct {
@@ -203,6 +206,8 @@ func TestCommandContractIsAutomationFriendly(t *testing.T) {
 		"--profile security-audit",
 		"overrides AWS_PROFILE",
 		"credential chain are unchanged",
+		"--timeout",
+		"--max-retries",
 		"policy-scout aws --account-id 123456789012",
 	} {
 		if !strings.Contains(help.String(), expected) {
@@ -227,6 +232,242 @@ func TestCommandContractIsAutomationFriendly(t *testing.T) {
 
 	if !rootCmd.SilenceUsage {
 		t.Fatal("runtime errors must not be followed by usage output")
+	}
+}
+
+func TestAWSExecutionControlFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		args    []string
+		want    awsExecutionControls
+		wantErr string
+	}{
+		"omitted preserves SDK defaults": {},
+		"timeout": {
+			args: []string{"--timeout", "30s"},
+			want: awsExecutionControls{timeout: 30 * time.Second, timeoutSet: true},
+		},
+		"timeout must not be zero": {
+			args:    []string{"--timeout", "0s"},
+			wantErr: "invalid --timeout",
+		},
+		"timeout must not be negative": {
+			args:    []string{"--timeout", "-1s"},
+			wantErr: "invalid --timeout",
+		},
+		"timeout must be a duration": {
+			args:    []string{"--timeout", "soon"},
+			wantErr: "invalid argument",
+		},
+		"zero retries": {
+			args: []string{"--max-retries", "0"},
+			want: awsExecutionControls{maxRetries: 0, maxRetriesSet: true},
+		},
+		"three retries": {
+			args: []string{"--max-retries", "3"},
+			want: awsExecutionControls{maxRetries: 3, maxRetriesSet: true},
+		},
+		"retries must not be negative": {
+			args:    []string{"--max-retries", "-1"},
+			wantErr: "invalid --max-retries",
+		},
+		"retries have a safe upper bound": {
+			args:    []string{"--max-retries", "11"},
+			wantErr: "invalid --max-retries",
+		},
+		"retries must be an integer": {
+			args:    []string{"--max-retries", "many"},
+			wantErr: "invalid argument",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			command := &cobra.Command{Use: "test"}
+			addAWSExecutionFlags(command)
+			err := command.ParseFlags(test.args)
+			var got awsExecutionControls
+			if err == nil {
+				got, err = awsExecutionControlsFromCommand(command)
+			}
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("got error %v, want one containing %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parse execution controls: %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("got controls %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAWSExecutionControlsConfigureContextAndSDKRetries(t *testing.T) {
+	t.Parallel()
+
+	parent := context.Background()
+	omitted := awsExecutionControls{}
+	ctx, cancel := omitted.context(parent)
+	defer cancel()
+	if ctx != parent {
+		t.Fatal("omitted timeout must preserve the parent context")
+	}
+	if options := omitted.configLoadOptions(); options != nil {
+		t.Fatalf("omitted retry flag produced %d AWS configuration options", len(options))
+	}
+
+	controls := awsExecutionControls{
+		timeout:       30 * time.Second,
+		timeoutSet:    true,
+		maxRetries:    3,
+		maxRetriesSet: true,
+	}
+	ctx, cancel = controls.context(parent)
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("configured timeout did not create a context deadline")
+	}
+	if remaining := time.Until(deadline); remaining <= 29*time.Second || remaining > 30*time.Second {
+		t.Fatalf("context deadline has unexpected remaining duration %s", remaining)
+	}
+
+	options := controls.configLoadOptions()
+	if len(options) != 1 {
+		t.Fatalf("got %d AWS configuration options, want 1", len(options))
+	}
+	var loadOptions config.LoadOptions
+	if err := options[0](&loadOptions); err != nil {
+		t.Fatalf("apply AWS retry configuration: %v", err)
+	}
+	if loadOptions.RetryMaxAttempts != 4 {
+		t.Fatalf("got %d maximum attempts, want 4", loadOptions.RetryMaxAttempts)
+	}
+}
+
+func TestAWSExecutionControlsExplainStructuredErrors(t *testing.T) {
+	t.Parallel()
+
+	timeoutControls := awsExecutionControls{timeout: 30 * time.Second, timeoutSet: true}
+	timeoutError := timeoutControls.explainError(fmt.Errorf("list roots: %w", context.DeadlineExceeded))
+	if !errors.Is(timeoutError, context.DeadlineExceeded) || !strings.Contains(timeoutError.Error(), "exceeded --timeout 30s") {
+		t.Fatalf("unexpected timeout error: %v", timeoutError)
+	}
+	timeoutDiagnostic := classifyError(timeoutError)
+	if timeoutDiagnostic.Code != errorCodeTransient || timeoutDiagnostic.Message != "AWS execution exceeded --timeout 30s." {
+		t.Fatalf("unexpected timeout diagnostic: %#v", timeoutDiagnostic)
+	}
+
+	cancellationError := (awsExecutionControls{}).explainError(fmt.Errorf("list roots: %w", context.Canceled))
+	if !errors.Is(cancellationError, context.Canceled) || classifyError(cancellationError).Message != "Policy Scout execution was canceled." {
+		t.Fatalf("unexpected cancellation diagnostic: %v", cancellationError)
+	}
+
+	retryControls := awsExecutionControls{maxRetries: 3, maxRetriesSet: true}
+	retryError := retryControls.explainError(&awsretry.MaxAttemptsError{Attempt: 4, Err: errors.New("throttled")})
+	if !strings.Contains(retryError.Error(), "--max-retries 3 (4 total attempts)") {
+		t.Fatalf("unexpected retry error: %v", retryError)
+	}
+	retryDiagnostic := classifyError(retryError)
+	if retryDiagnostic.Code != errorCodeTransient || retryDiagnostic.Message != "AWS request exhausted --max-retries 3 (4 total attempts)." {
+		t.Fatalf("unexpected retry diagnostic: %#v", retryDiagnostic)
+	}
+}
+
+func TestAWSCallsPropagateContextDeadline(t *testing.T) {
+	t.Parallel()
+
+	deadline := time.Now().Add(time.Minute)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+
+	assertDeadline := func(got context.Context) {
+		t.Helper()
+		gotDeadline, ok := got.Deadline()
+		if !ok || !gotDeadline.Equal(deadline) {
+			t.Fatalf("AWS call received deadline %s (present: %t), want %s", gotDeadline, ok, deadline)
+		}
+	}
+
+	client := &fakeOrganizationsClient{
+		listChildrenFn: func(got context.Context, _ *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+			assertDeadline(got)
+			return &organizations.ListChildrenOutput{}, nil
+		},
+		listParentsFn: func(got context.Context, _ *organizations.ListParentsInput) (*organizations.ListParentsOutput, error) {
+			assertDeadline(got)
+			return &organizations.ListParentsOutput{Parents: []types.Parent{{Id: aws.String("r-root"), Type: types.ParentTypeRoot}}}, nil
+		},
+		listPoliciesForTargetFn: func(got context.Context, _ *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			assertDeadline(got)
+			return &organizations.ListPoliciesForTargetOutput{}, nil
+		},
+		listRootsFn: func(got context.Context, _ *organizations.ListRootsInput) (*organizations.ListRootsOutput, error) {
+			assertDeadline(got)
+			return &organizations.ListRootsOutput{Roots: []types.Root{{Id: aws.String("r-root")}}}, nil
+		},
+		describeAccountFn: func(got context.Context, input *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+			assertDeadline(got)
+			return &organizations.DescribeAccountOutput{Account: &types.Account{Id: input.AccountId, Name: aws.String("Account")}}, nil
+		},
+		describeOrganizationalUnit: func(got context.Context, input *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error) {
+			assertDeadline(got)
+			return &organizations.DescribeOrganizationalUnitOutput{OrganizationalUnit: &types.OrganizationalUnit{
+				Id: input.OrganizationalUnitId, Name: aws.String("OU"),
+			}}, nil
+		},
+		describeOrganizationFn: func(got context.Context, _ *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+			assertDeadline(got)
+			return &organizations.DescribeOrganizationOutput{Organization: &types.Organization{MasterAccountId: aws.String("999999999999")}}, nil
+		},
+	}
+
+	if _, err := listChildren(ctx, client, "r-root", types.ChildTypeAccount); err != nil {
+		t.Fatalf("list children: %v", err)
+	}
+	if _, err := listParents(ctx, client, "123456789012"); err != nil {
+		t.Fatalf("list parents: %v", err)
+	}
+	if _, err := listSCPsForTarget(ctx, client, "123456789012"); err != nil {
+		t.Fatalf("list SCPs: %v", err)
+	}
+	if _, err := getRootID(ctx, client); err != nil {
+		t.Fatalf("get root: %v", err)
+	}
+	if _, err := getAccount(ctx, client, "123456789012"); err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if _, err := getOU(ctx, client, "ou-root-12345678"); err != nil {
+		t.Fatalf("get OU: %v", err)
+	}
+	if _, err := getManagementAccountID(ctx, client); err != nil {
+		t.Fatalf("get management account: %v", err)
+	}
+}
+
+func TestAWSCancellationReachesPaginatorCalls(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	client := &fakeOrganizationsClient{
+		listChildrenFn: func(got context.Context, _ *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+			if !errors.Is(got.Err(), context.Canceled) {
+				t.Fatalf("AWS call context error is %v, want context canceled", got.Err())
+			}
+			return nil, got.Err()
+		},
+	}
+	_, err := listChildren(ctx, client, "r-root", types.ChildTypeAccount)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("got error %v, want context canceled", err)
 	}
 }
 
@@ -263,6 +504,33 @@ func TestLoadAWSConfigWithoutProfileUsesDefaultChain(t *testing.T) {
 	}
 
 	if _, err := loadAWSConfig(context.Background(), "", loader); err != nil {
+		t.Fatalf("load AWS config: %v", err)
+	}
+}
+
+func TestLoadAWSConfigCombinesProfileAndRetryOptions(t *testing.T) {
+	t.Parallel()
+
+	loader := func(_ context.Context, options ...func(*config.LoadOptions) error) (aws.Config, error) {
+		if len(options) != 2 {
+			t.Fatalf("got %d load options, want 2", len(options))
+		}
+		loadOptions := config.LoadOptions{}
+		for _, option := range options {
+			if err := option(&loadOptions); err != nil {
+				t.Fatalf("apply load option: %v", err)
+			}
+		}
+		if loadOptions.SharedConfigProfile != "security-audit" || loadOptions.RetryMaxAttempts != 4 {
+			t.Fatalf("unexpected load options: profile %q, retry attempts %d", loadOptions.SharedConfigProfile, loadOptions.RetryMaxAttempts)
+		}
+		return aws.Config{}, nil
+	}
+
+	controls := awsExecutionControls{maxRetries: 3, maxRetriesSet: true}
+	if _, err := loadAWSConfig(
+		context.Background(), "security-audit", loader, controls.configLoadOptions()...,
+	); err != nil {
 		t.Fatalf("load AWS config: %v", err)
 	}
 }

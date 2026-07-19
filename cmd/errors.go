@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/aws/smithy-go"
 	"github.com/spf13/cobra"
@@ -68,12 +69,17 @@ type errorKind int
 const (
 	errorKindInvocation errorKind = iota
 	errorKindCredentials
+	errorKindExecutionTimeout
+	errorKindExecutionCanceled
+	errorKindRetryExhausted
 )
 
 type commandError struct {
-	kind      errorKind
-	operation string
-	err       error
+	kind       errorKind
+	operation  string
+	timeout    time.Duration
+	maxRetries int
+	err        error
 }
 
 func (err *commandError) Error() string { return err.err.Error() }
@@ -85,6 +91,29 @@ func newInvalidInvocationError(err error) error {
 
 func newCredentialsError(operation string, err error) error {
 	return &commandError{kind: errorKindCredentials, operation: operation, err: err}
+}
+
+func newExecutionTimeoutError(timeout time.Duration, err error) error {
+	return &commandError{
+		kind: errorKindExecutionTimeout, timeout: timeout,
+		err: fmt.Errorf("AWS execution exceeded --timeout %s: %w", timeout, err),
+	}
+}
+
+func newExecutionCanceledError(err error) error {
+	return &commandError{kind: errorKindExecutionCanceled, err: fmt.Errorf("AWS execution canceled: %w", err)}
+}
+
+func newRetryExhaustedError(maxRetries int, err error) error {
+	return &commandError{
+		kind: errorKindRetryExhausted, maxRetries: maxRetries,
+		err: fmt.Errorf(
+			"AWS request exhausted --max-retries %d (%d total attempts): %w",
+			maxRetries,
+			maxRetries+1,
+			err,
+		),
+	}
 }
 
 func init() {
@@ -125,6 +154,26 @@ func classifyError(err error) classifiedError {
 			diagnostic := credentialsDiagnostic(operation)
 			diagnostic.RequestID = requestID(commandErr.err)
 			return diagnostic
+		case errorKindExecutionTimeout:
+			return classifiedError{
+				Code: errorCodeTransient, Message: fmt.Sprintf("AWS execution exceeded --timeout %s.", commandErr.timeout),
+				Operation: operationName(commandErr.err), Retryable: true, RequestID: requestID(commandErr.err),
+				Remediation: "Increase --timeout or reduce the requested traversal scope, then retry.", ExitCode: exitTransient,
+			}
+		case errorKindExecutionCanceled:
+			return canceledDiagnostic(operationName(commandErr.err), requestID(commandErr.err))
+		case errorKindRetryExhausted:
+			return classifiedError{
+				Code: errorCodeTransient,
+				Message: fmt.Sprintf(
+					"AWS request exhausted --max-retries %d (%d total attempts).",
+					commandErr.maxRetries,
+					commandErr.maxRetries+1,
+				),
+				Operation: operationName(commandErr.err), Retryable: true, RequestID: requestID(commandErr.err),
+				Remediation: "Increase --max-retries within its allowed range or retry later after checking AWS service health.",
+				ExitCode:    exitTransient,
+			}
 		}
 	}
 
@@ -152,6 +201,10 @@ func classifyError(err error) classifiedError {
 		}
 	}
 
+	if errors.Is(err, context.Canceled) {
+		return canceledDiagnostic(operation, requestIDValue)
+	}
+
 	var networkErr net.Error
 	if errors.As(err, &networkErr) || errors.Is(err, context.DeadlineExceeded) {
 		return transientDiagnostic(operation, requestIDValue)
@@ -177,6 +230,14 @@ func transientDiagnostic(operation, requestID string) classifiedError {
 		Code: errorCodeTransient, Message: "AWS is temporarily unavailable or the request was throttled.", Operation: operation,
 		Retryable: true, RequestID: requestID,
 		Remediation: "Retry with exponential backoff. Check network connectivity and AWS service health if the failure persists.", ExitCode: exitTransient,
+	}
+}
+
+func canceledDiagnostic(operation, requestID string) classifiedError {
+	return classifiedError{
+		Code: errorCodeUnexpected, Message: "Policy Scout execution was canceled.", Operation: operation,
+		Retryable: false, RequestID: requestID,
+		Remediation: "Rerun the command when ready.", ExitCode: exitUnexpected,
 	}
 }
 

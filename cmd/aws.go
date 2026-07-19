@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsretry "github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
@@ -24,7 +25,10 @@ import (
 )
 
 // Default indentation increment to build a tree like output.
-const indent string = "    "
+const (
+	indent            string = "    "
+	maxAllowedRetries int    = 10
+)
 
 // organizationJSONSchemaVersion identifies the compatibility contract for AWS organization JSON output.
 const organizationJSONSchemaVersion = "1"
@@ -98,12 +102,13 @@ organization. JSON output is used by default.
 Credentials and region configuration are loaded from the AWS SDK default
 configuration chain. Use --profile to select a named AWS shared-config profile;
 it takes precedence over AWS_PROFILE for profile selection. When omitted, the
-SDK's default profile selection and credential chain are unchanged. The selected
-identity needs read access to AWS Organizations. This command does not prompt
-for input.`,
+SDK's default profile selection and credential chain are unchanged. The SDK's
+configured retry behavior is also unchanged. The selected identity needs read
+access to AWS Organizations. This command does not prompt for input.`,
 		Example: `  policy-scout aws --account-id 123456789012
   policy-scout aws --profile security-audit --account-id 123456789012
   policy-scout aws --account-id 123456789012 --output-format json
+  policy-scout aws --account-id 123456789012 --timeout 30s --max-retries 3
   policy-scout aws --account-id all --output-format json > organization.json
   policy-scout aws --account-id all --output-format text`,
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -113,7 +118,7 @@ for input.`,
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return describeAccount(cmd.Context(), cmd.OutOrStdout(), accountID, profile)
+			return runAWSCommand(cmd)
 		},
 	}
 	authCmd = &cobra.Command{
@@ -148,11 +153,105 @@ func init() {
 	if err := awsCmd.RegisterFlagCompletionFunc("output-format", outputFormatCompletion); err != nil {
 		panic(err)
 	}
+	addAWSExecutionFlags(awsCmd)
 
 	authStatusCmd.Flags().VarP(&authStatusFormat, "output-format", "o", `output format: "json" or "text"`)
 	if err := authStatusCmd.RegisterFlagCompletionFunc("output-format", outputFormatCompletion); err != nil {
 		panic(err)
 	}
+}
+
+type awsExecutionControls struct {
+	timeout       time.Duration
+	maxRetries    int
+	timeoutSet    bool
+	maxRetriesSet bool
+}
+
+func addAWSExecutionFlags(cmd *cobra.Command) {
+	cmd.Flags().Duration("timeout", 0, "overall timeout for AWS configuration loading and API traversal (for example, 30s)")
+	cmd.Flags().Int("max-retries", 0, fmt.Sprintf("maximum retries per AWS API request, after the initial attempt (0-%d)", maxAllowedRetries))
+}
+
+func awsExecutionControlsFromCommand(cmd *cobra.Command) (awsExecutionControls, error) {
+	timeout, err := cmd.Flags().GetDuration("timeout")
+	if err != nil {
+		return awsExecutionControls{}, fmt.Errorf("read --timeout: %w", err)
+	}
+	maxRetries, err := cmd.Flags().GetInt("max-retries")
+	if err != nil {
+		return awsExecutionControls{}, fmt.Errorf("read --max-retries: %w", err)
+	}
+
+	controls := awsExecutionControls{
+		timeout:       timeout,
+		maxRetries:    maxRetries,
+		timeoutSet:    cmd.Flags().Changed("timeout"),
+		maxRetriesSet: cmd.Flags().Changed("max-retries"),
+	}
+	if err := controls.validate(); err != nil {
+		return awsExecutionControls{}, newInvalidInvocationError(err)
+	}
+	return controls, nil
+}
+
+func (controls awsExecutionControls) validate() error {
+	if controls.timeoutSet && controls.timeout <= 0 {
+		return errors.New("invalid --timeout: must be greater than zero")
+	}
+	if controls.maxRetriesSet && (controls.maxRetries < 0 || controls.maxRetries > maxAllowedRetries) {
+		return fmt.Errorf("invalid --max-retries: must be between 0 and %d", maxAllowedRetries)
+	}
+	return nil
+}
+
+func (controls awsExecutionControls) context(parent context.Context) (context.Context, context.CancelFunc) {
+	if !controls.timeoutSet {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, controls.timeout)
+}
+
+func (controls awsExecutionControls) configLoadOptions() []func(*config.LoadOptions) error {
+	if !controls.maxRetriesSet {
+		return nil
+	}
+
+	// AWS counts the initial request as an attempt; the CLI flag counts only
+	// retries so that --max-retries 0 has the expected no-retry behavior.
+	return []func(*config.LoadOptions) error{config.WithRetryMaxAttempts(controls.maxRetries + 1)}
+}
+
+func (controls awsExecutionControls) explainError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if controls.timeoutSet && errors.Is(err, context.DeadlineExceeded) {
+		return newExecutionTimeoutError(controls.timeout, err)
+	}
+	if errors.Is(err, context.Canceled) {
+		return newExecutionCanceledError(err)
+	}
+	if controls.maxRetriesSet {
+		var maxAttemptsError *awsretry.MaxAttemptsError
+		if errors.As(err, &maxAttemptsError) {
+			return newRetryExhaustedError(controls.maxRetries, err)
+		}
+	}
+	return err
+}
+
+func runAWSCommand(cmd *cobra.Command) error {
+	controls, err := awsExecutionControlsFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := controls.context(cmd.Context())
+	defer cancel()
+
+	err = describeAccount(ctx, cmd.OutOrStdout(), accountID, profile, controls.configLoadOptions()...)
+	return controls.explainError(err)
 }
 
 type awsAuthStatus struct {
@@ -287,20 +386,30 @@ func writeAWSAuthStatus(writer io.Writer, status awsAuthStatus, outputFormat out
 
 type awsConfigLoader func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error)
 
-func loadAWSConfig(ctx context.Context, selectedProfile string, loader awsConfigLoader) (aws.Config, error) {
+func loadAWSConfig(
+	ctx context.Context,
+	selectedProfile string,
+	loader awsConfigLoader,
+	options ...func(*config.LoadOptions) error,
+) (aws.Config, error) {
 	if selectedProfile != "" {
-		return loader(ctx, config.WithSharedConfigProfile(selectedProfile))
+		options = append([]func(*config.LoadOptions) error{config.WithSharedConfigProfile(selectedProfile)}, options...)
 	}
-	return loader(ctx)
+	return loader(ctx, options...)
 }
 
 // describeAccount computes the information requested from the target AWS account.
-func describeAccount(ctx context.Context, writer io.Writer, targetAccountID, selectedProfile string) error {
+func describeAccount(
+	ctx context.Context,
+	writer io.Writer,
+	targetAccountID, selectedProfile string,
+	configOptions ...func(*config.LoadOptions) error,
+) error {
 	if err := validateAccountID(targetAccountID); err != nil {
 		return newInvalidInvocationError(fmt.Errorf("invalid --account-id %q: must be \"all\" or exactly 12 decimal digits", targetAccountID))
 	}
 
-	cfg, err := loadAWSConfig(ctx, selectedProfile, config.LoadDefaultConfig)
+	cfg, err := loadAWSConfig(ctx, selectedProfile, config.LoadDefaultConfig, configOptions...)
 	if err != nil {
 		return newCredentialsError("LoadDefaultConfig", err)
 	}

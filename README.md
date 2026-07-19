@@ -76,6 +76,16 @@ policy-scout aws --account-id 339712974046 --output-format text
 policy-scout aws --account-id all --output-format text
 ```
 
+Bound AWS work for a CI job or coding agent:
+
+```bash
+policy-scout aws --account-id all --output-format json --timeout 30s --max-retries 3
+```
+
+- `--timeout <duration>` sets one overall deadline for AWS configuration and credential loading plus all Organizations API traversal. Durations use Go syntax such as `500ms`, `30s`, or `2m`. The value must be greater than zero.
+- `--max-retries <count>` limits each AWS API request to that many retries after its initial attempt. `0` disables retries; accepted values are `0` through `10`. Retryability and backoff remain managed by the AWS SDK.
+- When either flag is omitted, Policy Scout does not override that setting. In particular, omitting `--max-retries` preserves the AWS SDK default or settings from the AWS environment and shared configuration files.
+
 Run `policy-scout aws --help` for complete, copyable command examples and input requirements.
 
 Discover the installed binary version:
@@ -92,8 +102,9 @@ Policy Scout is non-interactive and is designed to be safe to invoke from script
 1. Run `policy-scout aws --help` to discover the supported operation and flags.
 2. Ensure AWS credentials are already available through the default credential chain.
 3. Use `--output-format json` explicitly in automation, even though JSON is the default.
-4. Check the exit status before parsing stdout. Exit status `0` means stdout contains one JSON document; a nonzero status means the operation failed and stderr contains a diagnostic.
-5. Add `--error-format json` to receive one machine-readable JSON error on stderr. This flag is independent of `--output-format` and may appear before or after the subcommand.
+4. Set `--timeout` and, when needed, `--max-retries` so a degraded AWS endpoint cannot leave the caller waiting indefinitely.
+5. Check the exit status before parsing stdout. Exit status `0` means stdout contains one JSON document; a nonzero status means the operation failed and stderr contains a diagnostic.
+6. Add `--error-format json` to receive one machine-readable JSON error on stderr. This flag is independent of `--output-format` and may appear before or after the subcommand.
 
 The CLI does not use confirmation prompts, interactive input, a pager, or colored output. Successful data is written to stdout and errors are written to stderr, so redirection and JSON processors work predictably:
 

@@ -18,8 +18,11 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 )
@@ -44,15 +47,26 @@ var rootCmd = &cobra.Command{
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() int {
-	return executeCommand(rootCmd, os.Args[1:], os.Stdout, os.Stderr)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	return executeCommandContext(ctx, rootCmd, os.Args[1:], os.Stdout, os.Stderr)
 }
 
 func executeCommand(command *cobra.Command, args []string, stdout, stderr io.Writer) int {
+	return executeCommandContext(context.Background(), command, args, stdout, stderr)
+}
+
+func executeCommandContext(
+	ctx context.Context,
+	command *cobra.Command,
+	args []string,
+	stdout, stderr io.Writer,
+) int {
 	command.SetArgs(args)
 	command.SetOut(stdout)
 	command.SetErr(stderr)
 
-	err := command.Execute()
+	err := command.ExecuteContext(ctx)
 	if err == nil {
 		return exitSuccess
 	}

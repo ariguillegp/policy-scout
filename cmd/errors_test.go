@@ -5,6 +5,7 @@ import (
 	"context"
 	encodingjson "encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aws/smithy-go"
@@ -145,6 +146,30 @@ func TestExecuteCommandPreservesSuccessfulStdout(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d", exitCode, exitSuccess)
 	}
 	if stdout.String() != "successful data\n" || stderr.Len() != 0 {
+		t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
+	}
+}
+
+func TestExecuteCommandContextPropagatesCancellation(t *testing.T) {
+	previousFormat := errorFormatValue
+	errorFormatValue = errorFormatHuman
+	t.Cleanup(func() { errorFormatValue = previousFormat })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	command := &cobra.Command{
+		Use:           "test",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Context().Err()
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	if exitCode := executeCommandContext(ctx, command, nil, &stdout, &stderr); exitCode != exitUnexpected {
+		t.Fatalf("exit code = %d, want %d", exitCode, exitUnexpected)
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "execution was canceled") {
 		t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
 	}
 }
