@@ -66,13 +66,13 @@ func (e *outputFormat) Set(value string) error {
 
 // Type is only used in help text.
 func (e *outputFormat) Type() string {
-	return "outputFormat"
+	return "text|json"
 }
 
 func outputFormatCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) { //nolint:unused
 	return []string{
-		"text\tdisplays results as a text based tree in your terminal",
-		"json\tdisplays results formatted in json",
+		"json\tdisplays results formatted as JSON",
+		"text\tdisplays results as a text-based tree in your terminal",
 	}, cobra.ShellCompDirectiveDefault
 }
 

@@ -52,7 +52,7 @@ func (value *errorFormat) Set(raw string) error {
 	}
 }
 
-func (value *errorFormat) Type() string { return "errorFormat" }
+func (value *errorFormat) Type() string { return "human|json" }
 
 type classifiedError struct {
 	Code        string `json:"code"`

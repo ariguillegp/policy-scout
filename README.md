@@ -20,7 +20,7 @@ Explore AWS Organizations service control policy (SCP) attachments from a termin
 - Display one account's path from the organization root, or the complete tree with `--account-id all`.
 - Display names from SCP summaries for direct attachments to each returned member account and its ancestors.
 - Identify the management account, whose users and roles are not affected by SCPs.
-- Produce structured `json` (default) or a human-readable `text` tree.
+- Produce structured JSON output (default) or a human-readable text-based tree.
 
 Policy Scout lists SCP summary names; it does not retrieve policy documents or evaluate SCP Allow/Deny semantics, IAM policies, resource policies, permission boundaries, session policies, or effective identity permissions.
 
