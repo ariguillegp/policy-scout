@@ -99,7 +99,11 @@ The status command calls AWS STS `GetCallerIdentity` and Organizations
 `DescribeOrganization`. It reports the credential source and expiration when
 available, but never displays secret credential values. A successful identity
 check with denied Organizations access is reported in the output and returns a
-nonzero exit status.
+nonzero exit status. For ordinary Organizations API failures, the status document's
+`organizations.error` is a stable AWS error code (or a Policy Scout error code
+when AWS provides none), and `organizations.message` is a curated diagnostic;
+raw AWS SDK error messages are not included. The classified diagnostic remains
+on stderr, and the existing access-denied and transient exit codes still apply.
 
 The AWS execution controls described below also apply to `aws auth status`.
 Its timeout covers configuration and credential retrieval plus both the STS
@@ -157,10 +161,10 @@ Policy Scout is non-interactive and is designed to be safe to invoke from script
 2. Ensure AWS credentials are already available through the default credential chain.
 3. Use `--output-format json` explicitly in automation, even though JSON is the default.
 4. Set `--timeout` and, when needed, `--max-retries` so a degraded AWS endpoint cannot leave the caller waiting indefinitely.
-5. Check the exit status before parsing stdout. Exit status `0` means stdout contains one JSON document; a nonzero status means the operation failed and stderr contains a diagnostic.
+5. Check the exit status before parsing organization traversal output. Exit status `0` means stdout contains one JSON document; a nonzero status means the operation failed and stderr contains a diagnostic. `aws auth status` is an exception: after authenticating the identity, it also writes its status document to stdout for ordinary Organizations failures, while returning a nonzero exit and writing the classified diagnostic to stderr. Cancellation, timeout, and retry exhaustion remain stderr-only.
 6. Add `--error-format json` to receive one machine-readable JSON error on stderr. This flag is independent of `--output-format` and may appear before or after the subcommand.
 
-The CLI does not use confirmation prompts, interactive input, a pager, browser/device authentication, or colored output. Successful data is written to stdout and errors are written to stderr, so redirection and JSON processors work predictably. If an SSO login remediation is returned, an operator must run it separately in an interactive terminal; agents should report the command rather than execute it:
+The CLI does not use confirmation prompts, interactive input, a pager, browser/device authentication, or colored output. Command results are written to stdout and classified diagnostics are written to stderr, so redirection and JSON processors work predictably. If an SSO login remediation is returned, an operator must run it separately in an interactive terminal; agents should report the command rather than execute it:
 
 ```bash
 if policy-scout aws --account-id all --output-format json > organization.json; then
@@ -292,9 +296,9 @@ Text output renders the same hierarchy as a tree:
 
 ## AWS auth status JSON compatibility
 
-`policy-scout aws auth status` resolves the AWS SDK default credential chain, calls AWS STS `GetCallerIdentity`, and calls AWS Organizations `DescribeOrganization`. With `--output-format json` (the default) it writes one JSON document to stdout and, on failure, a diagnostic to stderr. The document is an unwrapped object: it is not wrapped in a status envelope and does not carry a `schema_version` field.
+`policy-scout aws auth status` resolves the AWS SDK default credential chain, calls AWS STS `GetCallerIdentity`, and calls AWS Organizations `DescribeOrganization`. With `--output-format json` (the default), a completed status is an unwrapped JSON object on stdout: it is not wrapped in a status envelope and does not carry a `schema_version` field. Ordinary Organizations failures after authentication preserve that document and also write a diagnostic to stderr; failures before authentication, cancellation, timeout, and retry exhaustion do not write a status document.
 
-Supported flags are `--output-format json|text`, `--profile <name>` (overrides `AWS_PROFILE`), and the root-level `--error-format human|json`. `--timeout` and `--max-retries` apply to `policy-scout aws` and are not accepted by `aws auth status`. No secret credential values are displayed; the `credentials` object exposes only metadata.
+Supported flags are `--output-format json|text`, `--profile <name>` (overrides `AWS_PROFILE`), `--timeout`, `--max-retries`, and the root-level `--error-format human|json`. No secret credential values are displayed; the `credentials` object exposes only metadata.
 
 ### Fields
 
@@ -314,7 +318,8 @@ Supported flags are `--output-format json|text`, `--profile <name>` (overrides `
 | `organizations.accessible` | boolean | always | `true` when `DescribeOrganization` succeeded. |
 | `organizations.organization_id` | string | optional | Present when `accessible` is `true` and AWS returned a non-empty organization ID. |
 | `organizations.management_account_id` | string | optional | Present when `accessible` is `true` and AWS returned a non-empty management account ID. |
-| `organizations.error` | string | optional | Present when `DescribeOrganization` failed and its error message is non-empty. |
+| `organizations.error` | string | optional | Present when `DescribeOrganization` fails after authentication. Contains the AWS API error code, or a Policy Scout error code when AWS provides none. |
+| `organizations.message` | string | optional | Present with `organizations.error`. Contains a stable, curated diagnostic rather than the raw AWS SDK error message. |
 
 `ok` is `true` only when both `authenticated` and `organizations.accessible` are `true`.
 
@@ -365,22 +370,24 @@ stdout (exit status `1`):
   },
   "organizations": {
     "accessible": false,
-    "error": "AccessDeniedException"
+    "error": "AccessDeniedException",
+    "message": "AWS denied the Organizations request."
   }
 }
 ```
 
-stderr with `--error-format json` (exit status `1`, code `unexpected`):
+stderr with `--error-format json` (exit status `4`, code `aws_access_denied`):
 
 ```json
-{"code":"unexpected","message":"Policy Scout could not complete the request.","retryable":false,"remediation":"Review the command and environment, then rerun with current credentials. Report the request ID if the failure persists."}
+{"code":"aws_access_denied","message":"AWS denied the Organizations request.","operation":"DescribeOrganization","retryable":false,"remediation":"Grant the selected identity the required AWS Organizations read permissions, then retry."}
 ```
 
-The Organizations error detail is preserved in `organizations.error` on stdout; the stderr diagnostic is the generic `unexpected` classification. Stderr JSON is compact (single-line) because the error encoder does not indent it; only the stdout auth-status document is indented. With the default human error format, stderr is:
+The Organizations API error code and curated message are preserved on stdout without the raw AWS SDK error string. The original typed AWS error is classified independently on stderr. Stderr JSON is compact (single-line) because the error encoder does not indent it; only the stdout auth-status document is indented. With the default human error format, stderr is:
 
 ```text
-Error [unexpected]: Policy Scout could not complete the request.
-Remediation: Review the command and environment, then rerun with current credentials. Report the request ID if the failure persists.
+Error [aws_access_denied]: AWS denied the Organizations request.
+Operation: DescribeOrganization
+Remediation: Grant the selected identity the required AWS Organizations read permissions, then retry.
 ```
 
 ### Exit and stdout semantics
@@ -388,14 +395,17 @@ Remediation: Review the command and environment, then rerun with current credent
 | stdout JSON | `authenticated` | `ok` | Exit | Code | Meaning |
 | --- | --- | --- | ---: | --- | --- |
 | yes | `true` | `true` | `0` | — | Identity resolved and Organizations accessible. |
-| yes | `true` | `false` | `1` | `unexpected` | Identity resolved; `DescribeOrganization` failed. Parse stdout for `organizations.error`. |
-| no | — | — | `1` | `unexpected` | STS returned an incomplete identity, `DescribeOrganization` returned an empty organization, or an unclassified or canceled STS failure. |
+| yes | `true` | `false` | `1` | `unexpected` | Identity resolved; Organizations returned an unclassified error or malformed response. |
+| yes | `true` | `false` | `3` | `aws_credentials` | Identity resolved; Organizations rejected expired or invalid credentials. |
+| yes | `true` | `false` | `4` | `aws_access_denied` | Identity resolved; Organizations denied access. |
+| yes | `true` | `false` | `5` | `aws_transient` | Identity resolved; Organizations returned a retryable service or throttling failure. |
+| no | — | — | `1` | `unexpected` | STS returned an incomplete identity, or an unclassified or canceled STS failure occurred. |
 | no | — | — | `2` | `invalid_invocation` | Invalid flags or arguments. |
 | no | — | — | `3` | `aws_credentials` | Non-transient AWS configuration or credential retrieval failure, or a credential-classified STS error (for example, `ExpiredToken`). |
 | no | — | — | `4` | `aws_access_denied` | Authorization-classified STS error (for example, STS `AccessDenied`). |
-| no | — | — | `5` | `aws_transient` | Transient configuration/retrieval or STS failure (throttling, network, or AWS server fault). |
+| no | — | — | `5` | `aws_transient` | Transient configuration/retrieval or STS failure, timeout, or exhausted retry limit. |
 
-A JSON document appears on stdout only when STS `GetCallerIdentity` returned a complete identity, in which case `authenticated` is `true`. When stdout is empty, stderr contains the diagnostic and the exit status classifies the failure. A transient inner failure during configuration or credential retrieval is classified as `aws_transient` (exit `5`), not `aws_credentials`. Automation should check the exit status before parsing stdout; when the exit status is nonzero and stdout is non-empty, treat stdout as the auth-status document and stderr as the independent diagnostic.
+A JSON document appears on stdout only when STS `GetCallerIdentity` returned a complete identity and the Organizations check completed without cancellation, timeout, or retry exhaustion; `authenticated` is then `true`. When stdout is empty, stderr contains the diagnostic and the exit status classifies the failure. A transient inner failure during configuration or credential retrieval is classified as `aws_transient` (exit `5`), not `aws_credentials`. Automation should check the exit status before parsing stdout; when the exit status is nonzero and stdout is non-empty, treat stdout as the auth-status document and stderr as the independent diagnostic.
 
 ### Compatibility and versioning
 

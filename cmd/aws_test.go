@@ -22,6 +22,7 @@ import (
 	ssotypes "github.com/aws/aws-sdk-go-v2/service/sso/types"
 	ssooidctypes "github.com/aws/aws-sdk-go-v2/service/ssooidc/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 	"github.com/spf13/cobra"
 )
 
@@ -723,12 +724,16 @@ func TestAWSAuthStatusAppliesRetryOptionAndExplainsExhaustion(t *testing.T) {
 			}}
 	}
 
+	var output bytes.Buffer
 	err := displayAWSAuthStatusWithDependencies(
-		context.Background(), &bytes.Buffer{}, "", loader, clients, controls.configLoadOptions()...,
+		context.Background(), &output, "", loader, clients, controls.configLoadOptions()...,
 	)
 	err = controls.explainError(err)
 	if !strings.Contains(err.Error(), "--max-retries 3 (4 total attempts)") {
 		t.Fatalf("unexpected retry exhaustion error: %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("retry exhaustion wrote authentication status: %q", output.String())
 	}
 }
 
@@ -941,7 +946,10 @@ func TestGetAWSAuthStatusReportsOrganizationsDenial(t *testing.T) {
 	}
 	organizationsClient := &fakeOrganizationsClient{
 		describeOrganizationFn: func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
-			return nil, errors.New("AccessDeniedException")
+			return nil, &smithy.OperationError{
+				ServiceID: "Organizations", OperationName: "DescribeOrganization",
+				Err: &types.AccessDeniedException{Message: aws.String("unsafe provider detail")},
+			}
 		},
 	}
 
@@ -951,14 +959,168 @@ func TestGetAWSAuthStatusReportsOrganizationsDenial(t *testing.T) {
 		stsClient,
 		organizationsClient,
 	)
-	if err != nil {
-		t.Fatalf("get authentication status: %v", err)
+	if err == nil {
+		t.Fatal("get authentication status succeeded, want Organizations denial")
+	}
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "AccessDeniedException" {
+		t.Fatalf("Organizations error did not preserve typed AWS error: %v", err)
 	}
 	if status.OK || !status.Authenticated || status.Organizations.Accessible {
 		t.Fatalf("unexpected status: %#v", status)
 	}
 	if status.Organizations.Error != "AccessDeniedException" {
 		t.Fatalf("Organizations error is %q", status.Organizations.Error)
+	}
+	if status.Organizations.Message != "AWS denied the Organizations request." {
+		t.Fatalf("Organizations message is %q", status.Organizations.Message)
+	}
+
+	var output bytes.Buffer
+	if writeErr := writeAWSAuthStatus(&output, status, json); writeErr != nil {
+		t.Fatalf("write authentication status: %v", writeErr)
+	}
+	if strings.Contains(output.String(), "unsafe provider detail") {
+		t.Fatalf("authentication status exposes AWS error detail: %s", output.String())
+	}
+}
+
+func TestAWSAuthStatusOrganizationsFailurePreservesStdoutAndClassification(t *testing.T) {
+	tests := map[string]struct {
+		awsErr            error
+		wantCode          string
+		wantStatusError   string
+		wantStatusMessage string
+		wantExit          int
+	}{
+		"access denied": {
+			awsErr: &smithy.OperationError{
+				ServiceID: "Organizations", OperationName: "DescribeOrganization",
+				Err: &types.AccessDeniedException{Message: aws.String("unsafe provider detail")},
+			},
+			wantCode:          errorCodeAuthorization,
+			wantStatusError:   "AccessDeniedException",
+			wantStatusMessage: "AWS denied the Organizations request.",
+			wantExit:          exitAuthorization,
+		},
+		"transient server failure": {
+			awsErr:            awsOperationError("DescribeOrganization", "InternalServerError", smithy.FaultServer),
+			wantCode:          errorCodeTransient,
+			wantStatusError:   "InternalServerError",
+			wantStatusMessage: "AWS is temporarily unavailable or the request was throttled.",
+			wantExit:          exitTransient,
+		},
+		"empty Smithy code": {
+			awsErr: &smithy.OperationError{
+				ServiceID: "Organizations", OperationName: "DescribeOrganization",
+				Err: &smithy.GenericAPIError{Message: "unsafe provider detail", Fault: smithy.FaultClient},
+			},
+			wantCode:          errorCodeUnexpected,
+			wantStatusError:   errorCodeUnexpected,
+			wantStatusMessage: "Policy Scout could not complete the request.",
+			wantExit:          exitUnexpected,
+		},
+		"whitespace Smithy code": {
+			awsErr:            awsOperationError("DescribeOrganization", " \t ", smithy.FaultClient),
+			wantCode:          errorCodeUnexpected,
+			wantStatusError:   errorCodeUnexpected,
+			wantStatusMessage: "Policy Scout could not complete the request.",
+			wantExit:          exitUnexpected,
+		},
+		"missing organization details": {
+			wantCode:          errorCodeUnexpected,
+			wantStatusError:   errorCodeUnexpected,
+			wantStatusMessage: "Policy Scout could not complete the request.",
+			wantExit:          exitUnexpected,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			previousFormat := errorFormatValue
+			errorFormatValue = errorFormatJSON
+			t.Cleanup(func() { errorFormatValue = previousFormat })
+
+			command := &cobra.Command{
+				Use:           "status",
+				SilenceErrors: true,
+				SilenceUsage:  true,
+				RunE: func(cmd *cobra.Command, _ []string) error {
+					return runAWSAuthStatus(
+						cmd.Context(),
+						cmd.OutOrStdout(),
+						aws.Credentials{Source: "EnvConfigCredentials"},
+						&fakeSTSClient{getCallerIdentityFn: func(context.Context, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
+							return &sts.GetCallerIdentityOutput{
+								Account: aws.String("123456789012"),
+								Arn:     aws.String("arn:aws:iam::123456789012:user/test"),
+								UserId:  aws.String("AIDATEST"),
+							}, nil
+						}},
+						&fakeOrganizationsClient{describeOrganizationFn: func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+							return nil, test.awsErr
+						}},
+						json,
+					)
+				},
+			}
+
+			var stdout, stderr bytes.Buffer
+			if exitCode := executeCommand(command, nil, &stdout, &stderr); exitCode != test.wantExit {
+				t.Fatalf("exit code = %d, want %d", exitCode, test.wantExit)
+			}
+			if !encodingjson.Valid(stdout.Bytes()) || strings.Contains(stdout.String(), "unsafe provider detail") {
+				t.Fatalf("stdout is not sanitized status JSON: %q", stdout.String())
+			}
+			var status awsAuthStatus
+			if err := encodingjson.Unmarshal(stdout.Bytes(), &status); err != nil {
+				t.Fatalf("decode stdout status: %v", err)
+			}
+			if !status.Authenticated || status.Organizations.Accessible ||
+				status.Organizations.Error != test.wantStatusError ||
+				status.Organizations.Message != test.wantStatusMessage {
+				t.Fatalf("stdout status does not preserve useful identity diagnostics: %#v", status)
+			}
+			var diagnostic classifiedError
+			if err := encodingjson.Unmarshal(stderr.Bytes(), &diagnostic); err != nil {
+				t.Fatalf("decode stderr diagnostic %q: %v", stderr.String(), err)
+			}
+			if diagnostic.Code != test.wantCode {
+				t.Fatalf("stderr diagnostic = %#v, want code %q", diagnostic, test.wantCode)
+			}
+			if strings.Contains(stderr.String(), "unsafe provider detail") {
+				t.Fatalf("stderr exposes AWS error detail: %q", stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunAWSAuthStatusReturnsWriteErrorBeforeOrganizationsError(t *testing.T) {
+	t.Parallel()
+
+	writeErr := errors.New("write failed")
+	err := runAWSAuthStatus(
+		context.Background(),
+		&failingWriter{err: writeErr},
+		aws.Credentials{Source: "EnvConfigCredentials"},
+		&fakeSTSClient{getCallerIdentityFn: func(context.Context, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
+			return &sts.GetCallerIdentityOutput{
+				Account: aws.String("123456789012"),
+				Arn:     aws.String("arn:aws:iam::123456789012:user/test"),
+				UserId:  aws.String("AIDATEST"),
+			}, nil
+		}},
+		&fakeOrganizationsClient{describeOrganizationFn: func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+			return nil, &types.AccessDeniedException{Message: aws.String("unsafe provider detail")}
+		}},
+		json,
+	)
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("run authentication status error = %v, want write error", err)
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		t.Fatalf("run authentication status returned Organizations error instead of write error: %v", err)
 	}
 }
 

@@ -27,6 +27,7 @@ import (
 	ssotypes "github.com/aws/aws-sdk-go-v2/service/sso/types"
 	ssooidctypes "github.com/aws/aws-sdk-go-v2/service/ssooidc/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 	"github.com/spf13/cobra"
 )
 
@@ -313,6 +314,7 @@ type awsOrganizationsAuthStatus struct {
 	OrganizationID      string `json:"organization_id,omitempty"`
 	ManagementAccountID string `json:"management_account_id,omitempty"`
 	Error               string `json:"error,omitempty"`
+	Message             string `json:"message,omitempty"`
 }
 
 type awsAuthStatusClientFactory func(aws.Config) (stsClient, authStatusOrganizationsClient)
@@ -357,22 +359,37 @@ func displayAWSAuthStatusWithDependencies(
 	}
 	stsClient, organizationsClient := clientFactory(cfg)
 
+	return runAWSAuthStatus(
+		ctx,
+		writer,
+		credentials,
+		stsClient,
+		organizationsClient,
+		authStatusFormat,
+	)
+}
+
+func runAWSAuthStatus(
+	ctx context.Context,
+	writer io.Writer,
+	credentials aws.Credentials,
+	stsClient stsClient,
+	organizationsClient authStatusOrganizationsClient,
+	outputFormat outputFormat,
+) error {
 	status, err := getAWSAuthStatus(
 		ctx,
 		credentials,
 		stsClient,
 		organizationsClient,
 	)
-	if err != nil {
+	if err != nil && !status.Authenticated {
 		return err
 	}
-	if err := writeAWSAuthStatus(writer, status, authStatusFormat); err != nil {
-		return err
+	if writeErr := writeAWSAuthStatus(writer, status, outputFormat); writeErr != nil {
+		return writeErr
 	}
-	if !status.Organizations.Accessible {
-		return errors.New("AWS identity is authenticated, but AWS Organizations is not accessible")
-	}
-	return nil
+	return err
 }
 
 func getAWSAuthStatus(
@@ -416,11 +433,23 @@ func getAWSAuthStatus(
 			errors.As(organizationsErr, &maxAttemptsError) {
 			return awsAuthStatus{}, fmt.Errorf("describe AWS organization: %w", organizationsErr)
 		}
-		status.Organizations.Error = organizationsErr.Error()
-		return status, nil
+		diagnostic := classifyError(organizationsErr)
+		status.Organizations.Error = diagnostic.Code
+		status.Organizations.Message = diagnostic.Message
+		var apiErr smithy.APIError
+		if errors.As(organizationsErr, &apiErr) {
+			if code := strings.TrimSpace(apiErr.ErrorCode()); code != "" {
+				status.Organizations.Error = code
+			}
+		}
+		return status, fmt.Errorf("describe AWS organization: %w", organizationsErr)
 	}
 	if organization == nil || organization.Organization == nil {
-		return awsAuthStatus{}, errors.New("AWS returned no organization details")
+		organizationsErr := errors.New("AWS returned no organization details")
+		diagnostic := classifyError(organizationsErr)
+		status.Organizations.Error = diagnostic.Code
+		status.Organizations.Message = diagnostic.Message
+		return status, organizationsErr
 	}
 	status.OK = true
 	status.Organizations.Accessible = true
@@ -445,7 +474,7 @@ func writeAWSAuthStatus(writer io.Writer, status awsAuthStatus, outputFormat out
 		if status.Organizations.Accessible {
 			return writeOutput(writer, "AWS Organizations: accessible\nOrganization: %s\nManagement account: %s\n", status.Organizations.OrganizationID, status.Organizations.ManagementAccountID)
 		}
-		return writeOutput(writer, "AWS Organizations: not accessible\nError: %s\n", status.Organizations.Error)
+		return writeOutput(writer, "AWS Organizations: not accessible\nError: %s\nMessage: %s\n", status.Organizations.Error, status.Organizations.Message)
 	}
 
 	encoder := encodingjson.NewEncoder(writer)
