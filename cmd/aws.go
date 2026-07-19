@@ -103,7 +103,12 @@ for input.`,
   policy-scout aws --account-id 123456789012 --output-format json
   policy-scout aws --account-id all --output-format json > organization.json
   policy-scout aws --account-id all --output-format text`,
-		Args: cobra.NoArgs,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.NoArgs(cmd, args); err != nil {
+				return newInvalidInvocationError(err)
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return describeAccount(cmd.Context(), cmd.OutOrStdout(), accountID, profile)
 		},
@@ -135,7 +140,6 @@ func init() {
 	awsCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS shared-config profile to use (overrides AWS_PROFILE)")
 
 	awsCmd.Flags().StringVar(&accountID, "account-id", "", `AWS account ID to inspect (exactly 12 digits), or "all" for the entire organization`)
-	awsCmd.MarkFlagRequired("account-id") //nolint:gosec,errcheck
 
 	awsCmd.Flags().VarP(&format, "output-format", "o", `output format: "json" or "text"`)
 	if err := awsCmd.RegisterFlagCompletionFunc("output-format", outputFormatCompletion); err != nil {
@@ -290,15 +294,15 @@ func loadAWSConfig(ctx context.Context, selectedProfile string, loader awsConfig
 // describeAccount computes the information requested from the target AWS account.
 func describeAccount(ctx context.Context, writer io.Writer, targetAccountID, selectedProfile string) error {
 	if err := validateAccountID(targetAccountID); err != nil {
-		return fmt.Errorf("invalid --account-id %q: must be \"all\" or exactly 12 decimal digits", targetAccountID)
+		return newInvalidInvocationError(fmt.Errorf("invalid --account-id %q: must be \"all\" or exactly 12 decimal digits", targetAccountID))
 	}
 
 	cfg, err := loadAWSConfig(ctx, selectedProfile, config.LoadDefaultConfig)
 	if err != nil {
-		return fmt.Errorf(
-			"load AWS configuration from the default credential chain; check the selected AWS profile, region, and credentials: %w",
-			err,
-		)
+		return newCredentialsError("LoadDefaultConfig", err)
+	}
+	if _, err := cfg.Credentials.Retrieve(ctx); err != nil {
+		return newCredentialsError("RetrieveCredentials", err)
 	}
 	client := organizations.NewFromConfig(cfg)
 

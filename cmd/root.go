@@ -18,6 +18,7 @@ limitations under the License.
 package cmd
 
 import (
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -25,16 +26,40 @@ import (
 
 // rootCmd represents the base command when called without any subcommands.
 var rootCmd = &cobra.Command{
-	Use:          "policy-scout",
-	Short:        "Inspect cloud organization policies from one CLI",
-	SilenceUsage: true,
+	Use:           "policy-scout",
+	Short:         "Inspect cloud organization policies from one CLI",
+	SilenceErrors: true,
+	SilenceUsage:  true,
+	Args: func(cmd *cobra.Command, args []string) error {
+		if err := cobra.NoArgs(cmd, args); err != nil {
+			return newInvalidInvocationError(err)
+		}
+		return nil
+	},
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		return cmd.Help()
+	},
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
-func Execute() {
-	err := rootCmd.Execute()
-	if err != nil {
-		os.Exit(1)
+func Execute() int {
+	return executeCommand(rootCmd, os.Args[1:], os.Stdout, os.Stderr)
+}
+
+func executeCommand(command *cobra.Command, args []string, stdout, stderr io.Writer) int {
+	command.SetArgs(args)
+	command.SetOut(stdout)
+	command.SetErr(stderr)
+
+	err := command.Execute()
+	if err == nil {
+		return exitSuccess
 	}
+
+	diagnostic := classifyError(err)
+	if renderErr := writeError(stderr, diagnostic, errorFormatValue); renderErr != nil {
+		return diagnostic.ExitCode
+	}
+	return diagnostic.ExitCode
 }

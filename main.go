@@ -15,8 +15,14 @@ limitations under the License.
 */
 package main
 
-import "github.com/ariguillegp/policy-scout/cmd"
+import (
+	"os"
+
+	"github.com/ariguillegp/policy-scout/cmd"
+)
 
 func main() {
-	cmd.Execute()
+	if exitCode := cmd.Execute(); exitCode != 0 {
+		os.Exit(exitCode)
+	}
 }

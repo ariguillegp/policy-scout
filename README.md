@@ -84,7 +84,8 @@ Policy Scout is non-interactive and is designed to be safe to invoke from script
 1. Run `policy-scout aws --help` to discover the supported operation and flags.
 2. Ensure AWS credentials are already available through the default credential chain.
 3. Use `--output-format json` explicitly in automation, even though JSON is the default.
-4. Check the exit status before parsing stdout. Exit status `0` means stdout contains one JSON document; a nonzero status means the operation failed and stderr contains a plain-text diagnostic.
+4. Check the exit status before parsing stdout. Exit status `0` means stdout contains one JSON document; a nonzero status means the operation failed and stderr contains a diagnostic.
+5. Add `--error-format json` to receive one machine-readable JSON error on stderr. This flag is independent of `--output-format` and may appear before or after the subcommand.
 
 The CLI does not use confirmation prompts, interactive input, a pager, or colored output. Successful data is written to stdout and errors are written to stderr, so redirection and JSON processors work predictably:
 
@@ -93,6 +94,39 @@ if policy-scout aws --account-id all --output-format json > organization.json; t
   jq '.. | objects | select(.type? == "account")' organization.json
 fi
 ```
+
+For example, an agent can capture successful data and structured errors separately:
+
+```bash
+policy-scout --error-format json aws --account-id all \
+  > organization.json 2> policy-scout-error.json
+```
+
+JSON errors have this stable shape. `operation` and `request_id` are omitted when unavailable. Messages and remediation are curated and never include credentials or raw credential-provider errors.
+
+```json
+{
+  "code": "aws_access_denied",
+  "message": "AWS denied the Organizations request.",
+  "operation": "ListRoots",
+  "retryable": false,
+  "request_id": "example-request-id",
+  "remediation": "Grant the selected identity the required AWS Organizations read permissions, then retry."
+}
+```
+
+Exit statuses and stable error codes are:
+
+| Exit | Error code | Meaning |
+| ---: | --- | --- |
+| `0` | — | Success. |
+| `1` | `unexpected` | An unexpected local or AWS response failure. |
+| `2` | `invalid_invocation` | Invalid command, flag, argument, or input value. |
+| `3` | `aws_credentials` | Missing, invalid, or expired AWS credentials. |
+| `4` | `aws_access_denied` | AWS authorization denied the operation. |
+| `5` | `aws_transient` | Retryable network, throttling, or AWS service failure. |
+
+Human-readable stderr remains the default. Retry transient failures with backoff; correct the invocation or credentials/permissions before retrying other classified failures.
 
 ## Output
 
