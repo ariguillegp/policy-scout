@@ -10,6 +10,7 @@ Explore AWS Organizations service control policy (SCP) attachments from a termin
 - [Usage](#usage)
 - [Automation and agent usage](#automation-and-agent-usage)
 - [Output](#output)
+- [AWS auth status JSON compatibility](#aws-auth-status-json-compatibility)
 - [Version and JSON compatibility](#version-and-json-compatibility)
 - [Tooling](#tooling)
 - [License](#license)
@@ -283,6 +284,117 @@ Text output renders the same hierarchy as a tree:
                 |-- SCP: DenyRegions [p-e5f6g7h8] (Attached to: organizational_unit Finance [ou-cww9-x2atbcle]; Inherited: true)
                 |-- SCP: FullAWSAccess [p-FullAWSAccess] (Attached to: root Root [r-cww9]; Inherited: true)
 ```
+
+## AWS auth status JSON compatibility
+
+`policy-scout aws auth status` resolves the AWS SDK default credential chain, calls AWS STS `GetCallerIdentity`, and calls AWS Organizations `DescribeOrganization`. With `--output-format json` (the default) it writes one JSON document to stdout and, on failure, a diagnostic to stderr. The document is an unwrapped object: it is not wrapped in a status envelope and does not carry a `schema_version` field.
+
+Supported flags are `--output-format json|text`, `--profile <name>` (overrides `AWS_PROFILE`), and the root-level `--error-format human|json`. `--timeout` and `--max-retries` apply to `policy-scout aws` and are not accepted by `aws auth status`. No secret credential values are displayed; the `credentials` object exposes only metadata.
+
+### Fields
+
+| Field | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `ok` | boolean | always | `true` only when the identity was resolved and AWS Organizations is accessible. |
+| `authenticated` | boolean | always | `true` when STS `GetCallerIdentity` returned a complete identity. |
+| `identity` | object | always | Resolved caller identity. |
+| `identity.account_id` | string | always | AWS account ID from STS. |
+| `identity.arn` | string | always | ARN from STS. |
+| `identity.user_id` | string | always | Unique user/role ID from STS. |
+| `credentials` | object | always | Credential metadata; never contains secret values. |
+| `credentials.source` | string | always | AWS SDK-reported credential source label (for example, `EnvConfigCredentials` or `SharedConfigCredentials: <path>`). |
+| `credentials.can_expire` | boolean | always | `true` when the resolved credentials can expire. |
+| `credentials.expires_at` | string | optional | Present only when `credentials.can_expire` is `true`. UTC RFC 3339 timestamp, for example `2026-07-18T16:42:00Z`. |
+| `organizations` | object | always | Organizations access result. |
+| `organizations.accessible` | boolean | always | `true` when `DescribeOrganization` succeeded. |
+| `organizations.organization_id` | string | optional | Present when `accessible` is `true` and AWS returned a non-empty organization ID. |
+| `organizations.management_account_id` | string | optional | Present when `accessible` is `true` and AWS returned a non-empty management account ID. |
+| `organizations.error` | string | optional | Present when `DescribeOrganization` failed and its error message is non-empty. |
+
+`ok` is `true` only when both `authenticated` and `organizations.accessible` are `true`.
+
+### Successful example
+
+Exit status `0`; stdout contains the JSON document and stderr is empty.
+
+```json
+{
+  "ok": true,
+  "authenticated": true,
+  "identity": {
+    "account_id": "123456789012",
+    "arn": "arn:aws:sts::123456789012:assumed-role/AuditRole/test",
+    "user_id": "AROATEST:test"
+  },
+  "credentials": {
+    "source": "SharedConfigCredentials: /home/test/.aws/credentials",
+    "can_expire": true,
+    "expires_at": "2026-07-18T16:42:00Z"
+  },
+  "organizations": {
+    "accessible": true,
+    "organization_id": "o-exampleorgid",
+    "management_account_id": "123456789012"
+  }
+}
+```
+
+### Organizations-inaccessible example
+
+The identity was resolved, but `DescribeOrganization` failed. stdout still contains a complete JSON document, and the command exits nonzero. stdout and stderr carry separate payloads: parse stdout for the status and stderr for the diagnostic.
+
+stdout (exit status `1`):
+
+```json
+{
+  "ok": false,
+  "authenticated": true,
+  "identity": {
+    "account_id": "123456789012",
+    "arn": "arn:aws:iam::123456789012:user/test",
+    "user_id": "AIDATEST"
+  },
+  "credentials": {
+    "source": "EnvConfigCredentials",
+    "can_expire": false
+  },
+  "organizations": {
+    "accessible": false,
+    "error": "AccessDeniedException"
+  }
+}
+```
+
+stderr with `--error-format json` (exit status `1`, code `unexpected`):
+
+```json
+{"code":"unexpected","message":"Policy Scout could not complete the request.","retryable":false,"remediation":"Review the command and environment, then rerun with current credentials. Report the request ID if the failure persists."}
+```
+
+The Organizations error detail is preserved in `organizations.error` on stdout; the stderr diagnostic is the generic `unexpected` classification. Stderr JSON is compact (single-line) because the error encoder does not indent it; only the stdout auth-status document is indented. With the default human error format, stderr is:
+
+```text
+Error [unexpected]: Policy Scout could not complete the request.
+Remediation: Review the command and environment, then rerun with current credentials. Report the request ID if the failure persists.
+```
+
+### Exit and stdout semantics
+
+| stdout JSON | `authenticated` | `ok` | Exit | Code | Meaning |
+| --- | --- | --- | ---: | --- | --- |
+| yes | `true` | `true` | `0` | — | Identity resolved and Organizations accessible. |
+| yes | `true` | `false` | `1` | `unexpected` | Identity resolved; `DescribeOrganization` failed. Parse stdout for `organizations.error`. |
+| no | — | — | `1` | `unexpected` | STS returned an incomplete identity, `DescribeOrganization` returned an empty organization, or an unclassified or canceled STS failure. |
+| no | — | — | `2` | `invalid_invocation` | Invalid flags or arguments. |
+| no | — | — | `3` | `aws_credentials` | Non-transient AWS configuration or credential retrieval failure, or a credential-classified STS error (for example, `ExpiredToken`). |
+| no | — | — | `4` | `aws_access_denied` | Authorization-classified STS error (for example, STS `AccessDenied`). |
+| no | — | — | `5` | `aws_transient` | Transient configuration/retrieval or STS failure (throttling, network, or AWS server fault). |
+
+A JSON document appears on stdout only when STS `GetCallerIdentity` returned a complete identity, in which case `authenticated` is `true`. When stdout is empty, stderr contains the diagnostic and the exit status classifies the failure. A transient inner failure during configuration or credential retrieval is classified as `aws_transient` (exit `5`), not `aws_credentials`. Automation should check the exit status before parsing stdout; when the exit status is nonzero and stdout is non-empty, treat stdout as the auth-status document and stderr as the independent diagnostic.
+
+### Compatibility and versioning
+
+The auth status document has no `schema_version` field, and the organization `schema_version` does not cover it. Within a binary version, consumers must tolerate additive object fields. Removing or renaming fields, changing their types or meanings, or restructuring the document is a breaking change and requires a binary version bump and a documentation update here. Discover the installed binary version with `policy-scout version --output-format json`; its `version` field is the versioning anchor for auth status compatibility.
 
 ## Version and JSON compatibility
 
