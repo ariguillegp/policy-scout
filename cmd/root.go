@@ -71,8 +71,9 @@ func executeCommandContext(
 	}
 
 	diagnostic := classifyError(err)
-	if renderErr := writeError(stderr, diagnostic, errorFormatValue); renderErr != nil {
-		return diagnostic.ExitCode
-	}
+	// Write the diagnostic to stderr but let a write failure fall through: the
+	// original operation's exit code is the actionable signal, and replacing it
+	// with a generic writer-failure code would obscure why the command failed.
+	_ = writeError(stderr, diagnostic, errorFormatValue)
 	return diagnostic.ExitCode
 }

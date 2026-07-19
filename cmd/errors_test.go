@@ -151,6 +151,34 @@ func TestExecuteCommandPreservesSuccessfulStdout(t *testing.T) {
 	}
 }
 
+func TestExecuteCommandContextPreservesExitCodeOnStderrWriteFailure(t *testing.T) {
+	previousFormat := errorFormatValue
+	errorFormatValue = errorFormatHuman
+	t.Cleanup(func() { errorFormatValue = previousFormat })
+
+	command := &cobra.Command{
+		Use:           "test",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(*cobra.Command, []string) error {
+			return awsOperationError("ListRoots", "ThrottlingException", smithy.FaultClient)
+		},
+	}
+	var stdout bytes.Buffer
+	failingStderr := &failingWriter{err: errors.New("stderr closed")}
+	exitCode := executeCommandContext(context.Background(), command, nil, &stdout, failingStderr)
+	if exitCode != exitTransient {
+		t.Fatalf("exit code = %d, want %d (stderr write failure must not obscure the original operation status)",
+			exitCode, exitTransient)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout contains error output: %q", stdout.String())
+	}
+	if calls := failingStderr.writeCalls; calls == 0 {
+		t.Fatalf("expected at least one stderr write attempt, got %d", calls)
+	}
+}
+
 func TestExecuteCommandContextPropagatesCancellation(t *testing.T) {
 	previousFormat := errorFormatValue
 	errorFormatValue = errorFormatHuman
@@ -277,4 +305,16 @@ func awsOperationError(operation, code string, fault smithy.ErrorFault) error {
 		ServiceID: "Organizations", OperationName: operation,
 		Err: &smithy.GenericAPIError{Code: code, Message: "unsafe provider detail", Fault: fault},
 	}
+}
+
+// failingWriter is an io.Writer that always returns a non-nil error and
+// records how many write attempts were made.
+type failingWriter struct {
+	err        error
+	writeCalls int
+}
+
+func (w *failingWriter) Write(p []byte) (int, error) {
+	w.writeCalls++
+	return 0, w.err
 }
