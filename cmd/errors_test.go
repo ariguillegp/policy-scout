@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/credentials/ssocreds"
 	"github.com/aws/smithy-go"
 	"github.com/spf13/cobra"
 )
@@ -219,6 +220,39 @@ func TestCredentialProviderTransientFailureRemainsRetryable(t *testing.T) {
 	}
 	if diagnostic.Operation != "AssumeRole" {
 		t.Fatalf("operation = %q, want AssumeRole", diagnostic.Operation)
+	}
+}
+
+func TestSSORemediationSupportsHumanAndJSONErrors(t *testing.T) {
+	t.Parallel()
+
+	err := addSSORemediation(
+		newCredentialsError("RetrieveCredentials", &ssocreds.InvalidTokenError{}),
+		"dev;$(touch nope)",
+	)
+	diagnostic := classifyError(err)
+	if diagnostic.Code != errorCodeCredentials || diagnostic.ExitCode != exitCredentials || diagnostic.Retryable {
+		t.Fatalf("unexpected SSO diagnostic: %#v", diagnostic)
+	}
+	if diagnostic.Operation != "RetrieveCredentials" {
+		t.Fatalf("operation is %q, want RetrieveCredentials", diagnostic.Operation)
+	}
+	if !strings.Contains(diagnostic.Remediation, "aws sso login --profile='dev;$(touch nope)'") ||
+		!strings.Contains(diagnostic.Remediation, "did not run this command automatically") {
+		t.Fatalf("unexpected SSO remediation: %q", diagnostic.Remediation)
+	}
+
+	for _, format := range []errorFormat{errorFormatHuman, errorFormatJSON} {
+		var output bytes.Buffer
+		if err := writeError(&output, diagnostic, format); err != nil {
+			t.Fatalf("write %s SSO diagnostic: %v", format, err)
+		}
+		if format == errorFormatJSON && !encodingjson.Valid(output.Bytes()) {
+			t.Fatalf("JSON SSO diagnostic is invalid: %q", output.String())
+		}
+		if strings.Count(output.String(), "aws sso login") != 1 {
+			t.Fatalf("SSO command should appear once in %s diagnostic: %q", format, output.String())
+		}
 	}
 }
 

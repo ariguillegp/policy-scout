@@ -25,7 +25,16 @@ Policy Scout lists SCP summary names; it does not retrieve policy documents or e
 
 ## Prerequisites
 
-Policy Scout uses the [AWS SDK default configuration and credential chain](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html). Configure credentials before running it. Pass `--profile <name>` to select an AWS shared-config profile explicitly; this selection takes precedence over `AWS_PROFILE`. When `--profile` is omitted, the SDK's normal profile selection and default credential chain are unchanged. Policy Scout itself never prompts, but an external credential provider may require you to authenticate before a non-interactive run.
+Policy Scout uses the [AWS SDK default configuration and credential chain](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html). Configure credentials before running it. Pass `--profile <name>` to select an AWS shared-config profile explicitly; this selection takes precedence over `AWS_PROFILE`. When `--profile` is omitted, the SDK's normal profile selection and default credential chain are unchanged.
+
+For an AWS IAM Identity Center (SSO) profile, authenticate separately before running Policy Scout:
+
+```bash
+aws sso login --profile=my-profile
+policy-scout aws --profile my-profile --account-id 339712974046
+```
+
+If the SDK reports a missing or expired SSO session, both `policy-scout aws` and `policy-scout aws auth status` include the selected profile in a copyable `aws sso login` remediation. Detection is best-effort: configuration, permissions, role assignment, network, and cache-file access failures are reported without a login suggestion. Policy Scout never runs AWS CLI login itself, opens a browser or device flow, prompts for credentials, changes environment variables, or stores credentials.
 
 The selected AWS identity must be able to inspect the organization. Depending on the requested scope, Policy Scout calls:
 
@@ -108,7 +117,7 @@ Policy Scout is non-interactive and is designed to be safe to invoke from script
 5. Check the exit status before parsing stdout. Exit status `0` means stdout contains one JSON document; a nonzero status means the operation failed and stderr contains a diagnostic.
 6. Add `--error-format json` to receive one machine-readable JSON error on stderr. This flag is independent of `--output-format` and may appear before or after the subcommand.
 
-The CLI does not use confirmation prompts, interactive input, a pager, or colored output. Successful data is written to stdout and errors are written to stderr, so redirection and JSON processors work predictably:
+The CLI does not use confirmation prompts, interactive input, a pager, browser/device authentication, or colored output. Successful data is written to stdout and errors are written to stderr, so redirection and JSON processors work predictably. If an SSO login remediation is returned, an operator must run it separately in an interactive terminal; agents should report the command rather than execute it:
 
 ```bash
 if policy-scout aws --account-id all --output-format json > organization.json; then

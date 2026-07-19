@@ -128,6 +128,23 @@ func init() {
 }
 
 func classifyError(err error) classifiedError {
+	var ssoErr *ssoRemediationError
+	if errors.As(err, &ssoErr) {
+		diagnostic := classifyError(ssoErr.err)
+		diagnostic.Code = errorCodeCredentials
+		diagnostic.Message = fmt.Sprintf(
+			"AWS IAM Identity Center (SSO) credentials for profile %q are missing or expired.",
+			ssoErr.profile,
+		)
+		diagnostic.Retryable = false
+		diagnostic.Remediation = fmt.Sprintf(
+			"Run aws sso login --profile=%s in an interactive terminal, then retry. Policy Scout did not run this command automatically.",
+			shellQuote(ssoErr.profile),
+		)
+		diagnostic.ExitCode = exitCredentials
+		return diagnostic
+	}
+
 	operation := operationName(err)
 	requestIDValue := requestID(err)
 

@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -18,8 +20,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsretry "github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/ssocreds"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	ssotypes "github.com/aws/aws-sdk-go-v2/service/sso/types"
+	ssooidctypes "github.com/aws/aws-sdk-go-v2/service/ssooidc/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/spf13/cobra"
 )
@@ -109,7 +114,9 @@ configuration chain. Use --profile to select a named AWS shared-config profile;
 it takes precedence over AWS_PROFILE for profile selection. When omitted, the
 SDK's default profile selection and credential chain are unchanged. The SDK's
 configured retry behavior is also unchanged. The selected identity needs read
-access to AWS Organizations. This command does not prompt for input.`,
+access to AWS Organizations. This command does not prompt for input or start an
+AWS SSO login. If SSO credentials are missing or expired, run the suggested
+"aws sso login --profile=<name>" command separately in an interactive terminal.`,
 		Example: `  policy-scout aws --account-id 123456789012
   policy-scout aws --profile security-audit --account-id 123456789012
   policy-scout aws --account-id 123456789012 --output-format json
@@ -135,7 +142,9 @@ access to AWS Organizations. This command does not prompt for input.`,
 		Short: "Show the resolved AWS identity and Organizations access",
 		Long: `Resolve credentials from the AWS SDK default credential chain, identify
 the caller with AWS STS, and verify access to AWS Organizations. No secret
-credential values are displayed and this command does not prompt for input.`,
+credential values are displayed. This command does not prompt for input or
+start an AWS SSO login. Missing or expired SSO credentials produce a copyable
+login command for an operator to run separately.`,
 		Example: `  policy-scout aws auth status
   policy-scout aws auth status --output-format text`,
 		Args: cobra.NoArgs,
@@ -286,14 +295,18 @@ type awsOrganizationsAuthStatus struct {
 	Error               string `json:"error,omitempty"`
 }
 
-func displayAWSAuthStatus(ctx context.Context, writer io.Writer, selectedProfile string) error {
+func displayAWSAuthStatus(ctx context.Context, writer io.Writer, selectedProfile string) (err error) {
+	defer func() {
+		err = addSSORemediation(err, selectedProfile)
+	}()
+
 	cfg, err := loadAWSConfig(ctx, selectedProfile, config.LoadDefaultConfig)
 	if err != nil {
-		return fmt.Errorf("load AWS configuration from the default credential chain: %w", err)
+		return newCredentialsError("LoadDefaultConfig", err)
 	}
 	credentials, err := cfg.Credentials.Retrieve(ctx)
 	if err != nil {
-		return fmt.Errorf("retrieve AWS credentials from the default credential chain: %w", err)
+		return newCredentialsError("RetrieveCredentials", err)
 	}
 
 	status, err := getAWSAuthStatus(
@@ -409,7 +422,11 @@ func describeAccount(
 	writer io.Writer,
 	targetAccountID, selectedProfile string,
 	configOptions ...func(*config.LoadOptions) error,
-) error {
+) (err error) {
+	defer func() {
+		err = addSSORemediation(err, selectedProfile)
+	}()
+
 	if err := validateAccountID(targetAccountID); err != nil {
 		return newInvalidInvocationError(fmt.Errorf("invalid --account-id %q: must be \"all\" or exactly 12 decimal digits", targetAccountID))
 	}
@@ -452,6 +469,69 @@ type scpAttachment struct {
 	PolicyName string              `json:"policy_name"`
 	AttachedTo scpAttachmentTarget `json:"attached_to"`
 	Inherited  bool                `json:"inherited"`
+}
+
+type ssoRemediationError struct {
+	profile string
+	err     error
+}
+
+func (err *ssoRemediationError) Error() string { return err.err.Error() }
+func (err *ssoRemediationError) Unwrap() error { return err.err }
+
+func resolvedAWSProfile(selectedProfile string) string {
+	if selectedProfile != "" {
+		return selectedProfile
+	}
+	if profile := os.Getenv("AWS_PROFILE"); profile != "" {
+		return profile
+	}
+	if profile := os.Getenv("AWS_DEFAULT_PROFILE"); profile != "" {
+		return profile
+	}
+	return "default"
+}
+
+func addSSORemediation(err error, selectedProfile string) error {
+	if err == nil || !isSSOCredentialError(err) {
+		return err
+	}
+	return &ssoRemediationError{profile: resolvedAWSProfile(selectedProfile), err: err}
+}
+
+func isSSOCredentialError(err error) bool {
+	var invalidToken *ssocreds.InvalidTokenError
+	if errors.As(err, &invalidToken) {
+		return invalidToken.Err == nil || errors.Is(invalidToken.Err, fs.ErrNotExist)
+	}
+
+	message := err.Error()
+	if strings.Contains(message, "failed to read cached SSO token file") && errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	if strings.Contains(message, "cached SSO token is expired, or not present, and cannot be refreshed") {
+		return true
+	}
+
+	var invalidGrant *ssooidctypes.InvalidGrantException
+	if errors.As(err, &invalidGrant) {
+		return true
+	}
+
+	var unauthorized *ssotypes.UnauthorizedException
+	return errors.As(err, &unauthorized)
+}
+
+func shellQuote(value string) string {
+	if value != "" && strings.IndexFunc(value, func(r rune) bool {
+		return (r < 'a' || r > 'z') &&
+			(r < 'A' || r > 'Z') &&
+			(r < '0' || r > '9') &&
+			!strings.ContainsRune("_+=,.@-/", r)
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 type organizationJSONNode struct {

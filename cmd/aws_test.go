@@ -6,6 +6,7 @@ import (
 	encodingjson "encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,8 +15,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsretry "github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/ssocreds"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	ssotypes "github.com/aws/aws-sdk-go-v2/service/sso/types"
+	ssooidctypes "github.com/aws/aws-sdk-go-v2/service/ssooidc/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/spf13/cobra"
 )
@@ -271,6 +275,8 @@ func TestCommandContractIsAutomationFriendly(t *testing.T) {
 		"credential chain are unchanged",
 		"--timeout",
 		"--max-retries",
+		"does not prompt for input or start an",
+		"aws sso login --profile=<name>",
 		"direct attachments to an account",
 		"root/OU in its ancestor path",
 		"does not retrieve policy documents",
@@ -305,6 +311,87 @@ func TestCommandContractIsAutomationFriendly(t *testing.T) {
 	if !rootCmd.SilenceUsage {
 		t.Fatal("runtime errors must not be followed by usage output")
 	}
+}
+
+func TestAddSSORemediation(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		err      error
+		profile  string
+		wantHint bool
+	}{
+		"typed expired token": {
+			err: &ssocreds.InvalidTokenError{}, profile: "engineering", wantHint: true,
+		},
+		"modern expired session cannot refresh": {
+			err:     errors.New("refresh cached SSO token failed, cached SSO token is expired, or not present, and cannot be refreshed"),
+			profile: "team dev", wantHint: true,
+		},
+		"missing SSO cache": {
+			err: fmt.Errorf("failed to read cached SSO token file: %w", fs.ErrNotExist), profile: "default", wantHint: true,
+		},
+		"typed SSO unauthorized": {
+			err: &ssotypes.UnauthorizedException{}, profile: "dev's profile", wantHint: true,
+		},
+		"typed invalid refresh grant": {
+			err: &ssooidctypes.InvalidGrantException{}, profile: "-prod", wantHint: true,
+		},
+		"refresh network failure": {
+			err: errors.New("refresh cached SSO token failed, unable to refresh SSO token: connection reset"), profile: "dev",
+		},
+		"cache permission failure": {
+			err: fmt.Errorf("failed to read cached SSO token file: %w", fs.ErrPermission), profile: "dev",
+		},
+		"cache parse failure": {
+			err: errors.New("failed to parse cached SSO token file: invalid character"), profile: "dev",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			original := newCredentialsError("RetrieveCredentials", test.err)
+			got := addSSORemediation(original, test.profile)
+			if !errors.Is(got, original) {
+				t.Fatal("remediation must preserve the original error in its error chain")
+			}
+			var remediation *ssoRemediationError
+			if errors.As(got, &remediation) != test.wantHint {
+				t.Fatalf("unexpected SSO remediation wrapper: %v", got)
+			}
+		})
+	}
+}
+
+func TestResolvedAWSProfile(t *testing.T) {
+	t.Run("explicit profile takes precedence", func(t *testing.T) {
+		t.Setenv("AWS_PROFILE", "environment")
+		t.Setenv("AWS_DEFAULT_PROFILE", "fallback")
+		if got := resolvedAWSProfile("flag"); got != "flag" {
+			t.Fatalf("resolved profile is %q, want flag", got)
+		}
+	})
+
+	t.Run("AWS_PROFILE takes environment precedence", func(t *testing.T) {
+		t.Setenv("AWS_PROFILE", "environment")
+		t.Setenv("AWS_DEFAULT_PROFILE", "fallback")
+		if got := resolvedAWSProfile(""); got != "environment" {
+			t.Fatalf("resolved profile is %q, want environment", got)
+		}
+	})
+
+	t.Run("AWS_DEFAULT_PROFILE and default are fallbacks", func(t *testing.T) {
+		t.Setenv("AWS_PROFILE", "")
+		t.Setenv("AWS_DEFAULT_PROFILE", "fallback")
+		if got := resolvedAWSProfile(""); got != "fallback" {
+			t.Fatalf("resolved profile is %q, want fallback", got)
+		}
+		t.Setenv("AWS_DEFAULT_PROFILE", "")
+		if got := resolvedAWSProfile(""); got != "default" {
+			t.Fatalf("resolved profile is %q, want default", got)
+		}
+	})
 }
 
 func TestAWSExecutionControlFlags(t *testing.T) {
