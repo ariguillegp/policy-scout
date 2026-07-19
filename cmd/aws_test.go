@@ -838,6 +838,9 @@ func TestPrintEntireOrgVisitsEachParentOnce(t *testing.T) {
 	if err := encodingjson.Unmarshal(output.Bytes(), &result); err != nil {
 		t.Fatalf("decode organization JSON: %v", err)
 	}
+	if result.SchemaVersion != organizationJSONSchemaVersion {
+		t.Fatalf("schema version is %q, want %q", result.SchemaVersion, organizationJSONSchemaVersion)
+	}
 	if len(result.Children) != 2 || !result.Children[0].ManagementAccount {
 		t.Fatalf("unexpected root children: %+v", result.Children)
 	}

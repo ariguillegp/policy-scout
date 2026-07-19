@@ -26,6 +26,9 @@ import (
 // Default indentation increment to build a tree like output.
 const indent string = "    "
 
+// organizationJSONSchemaVersion identifies the compatibility contract for AWS organization JSON output.
+const organizationJSONSchemaVersion = "1"
+
 // Defining a custom enum to restrict output format values.
 type outputFormat string
 
@@ -325,6 +328,7 @@ func describeAccount(ctx context.Context, writer io.Writer, targetAccountID, sel
 }
 
 type organizationJSONNode struct {
+	SchemaVersion     string                 `json:"schema_version,omitempty"`
 	Type              string                 `json:"type"`
 	ID                string                 `json:"id"`
 	Name              string                 `json:"name,omitempty"`
@@ -339,7 +343,7 @@ func displayOrganizationTreeJSON(
 	client organizationsClient,
 	targetAccountID, rootID, managementAccountID string,
 ) error {
-	root := organizationJSONNode{Type: "root", ID: rootID}
+	root := organizationJSONNode{SchemaVersion: organizationJSONSchemaVersion, Type: "root", ID: rootID}
 	policyCache := map[string][]types.PolicySummary{}
 
 	var err error

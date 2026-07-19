@@ -4,9 +4,15 @@ version: 2
 source:
   enabled: true
 
-# Don't build any binaries
+# Build release binaries and inject the semantic-release version.
 builds:
-  - skip: true
+  - id: policy-scout
+    main: .
+    binary: policy-scout
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X github.com/ariguillegp/policy-scout/cmd.version={{.Version}}
 
 # Generate changelog
 changelog:

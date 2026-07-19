@@ -9,6 +9,7 @@ Explore AWS Organizations service control policies (SCPs) from a terminal. Polic
 - [Usage](#usage)
 - [Automation and agent usage](#automation-and-agent-usage)
 - [Output](#output)
+- [Version and JSON compatibility](#version-and-json-compatibility)
 - [Tooling](#tooling)
 - [License](#license)
 - [Feedback](#feedback)
@@ -77,6 +78,13 @@ policy-scout aws --account-id all --output-format text
 
 Run `policy-scout aws --help` for complete, copyable command examples and input requirements.
 
+Discover the installed binary version:
+
+```bash
+policy-scout version
+policy-scout version --output-format json
+```
+
 ## Automation and agent usage
 
 Policy Scout is non-interactive and is designed to be safe to invoke from scripts and coding agents such as Amp, Claude Code, and Codex:
@@ -132,6 +140,7 @@ Human-readable stderr remains the default. Retry transient failures with backoff
 
 JSON output is a tree rooted at the AWS organization root. Nodes use these fields:
 
+- `schema_version`: the organization JSON compatibility version; present on the root node.
 - `type`: `root`, `organizational_unit`, or `account`.
 - `id`: the AWS entity ID.
 - `name`: the entity name, when applicable.
@@ -143,6 +152,7 @@ Fields that do not apply or contain no values may be omitted. The successful JSO
 
 ```json
 {
+  "schema_version": "1",
   "type": "root",
   "id": "r-cww9",
   "children": [
@@ -171,6 +181,21 @@ Text output renders the same hierarchy as a tree:
         |-- OU: Finance [ou-cww9-x2atbcle]
             |-- Account: aws-child1 [339712974046] (SCPs: DenyAccessS3, FullAWSAccess)
 ```
+
+## Version and JSON compatibility
+
+`policy-scout version --output-format json` provides machine-readable binary and schema discovery without AWS credentials:
+
+```json
+{
+  "version": "1.2.3",
+  "organization_schema_version": "1"
+}
+```
+
+Release binaries report their release version; binaries built directly with `go build` report `dev`. The organization output's root-level `schema_version` matches `organization_schema_version` above.
+
+Within one schema version, consumers must tolerate additive object fields and should use the `type` field rather than assume every node has identical fields. Removing or renaming fields, changing their types or meanings, or restructuring the document is a breaking change and requires a new `schema_version`. The successful organization document remains an unwrapped root node.
 
 ## Tooling
 

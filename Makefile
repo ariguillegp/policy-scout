@@ -3,6 +3,8 @@ GO := $(MISE) go
 GOFUMPT := $(MISE) gofumpt
 GOLANGCI_LINT := $(MISE) golangci-lint
 PRE_COMMIT := $(MISE) pre-commit
+VERSION ?= dev
+LDFLAGS := -X github.com/ariguillegp/policy-scout/cmd.version=$(VERSION)
 
 .PHONY: help
 help: ## Displays this help menu
@@ -42,7 +44,7 @@ test: ## Runs your unit tests and generates HTML coverage report
 .PHONY: build
 build: ## Builds your application binaries
 	@echo "Building your application binaries..."
-	@$(GO) build -o bin/policy-scout
+	@$(GO) build -ldflags "$(LDFLAGS)" -o bin/policy-scout
 
 .PHONY: validate
 validate: setup tidy fmt lint test build clean ## Validates your application
