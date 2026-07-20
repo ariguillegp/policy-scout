@@ -155,6 +155,52 @@ func TestValidateAccountID(t *testing.T) {
 	}
 }
 
+func TestSelectedAWSTargetValidatesAccountAndOrganizationalUnitFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		accountID  string
+		accountSet bool
+		ouID       string
+		ouSet      bool
+		want       string
+		wantErr    string
+	}{
+		"account":              {accountID: "123456789012", accountSet: true, want: "123456789012"},
+		"all":                  {accountID: "all", accountSet: true, want: "all"},
+		"organizational unit":  {ouID: "ou-abcd-12345678", ouSet: true, want: "ou-abcd-12345678"},
+		"neither":              {wantErr: "invalid --account-id"},
+		"stale account value":  {accountID: "123456789012", wantErr: "invalid --account-id"},
+		"empty account":        {accountSet: true, wantErr: "invalid --account-id"},
+		"empty OU":             {ouSet: true, wantErr: "invalid --ou-id"},
+		"both":                 {accountID: "123456789012", accountSet: true, ouID: "ou-abcd-12345678", ouSet: true, wantErr: "mutually exclusive"},
+		"account and empty OU": {accountID: "123456789012", accountSet: true, ouSet: true, wantErr: "mutually exclusive"},
+		"empty account and OU": {accountSet: true, ouID: "ou-abcd-12345678", ouSet: true, wantErr: "mutually exclusive"},
+		"invalid OU prefix":    {ouID: "xx-abcd-12345678", ouSet: true, wantErr: "invalid --ou-id"},
+		"short OU unique part": {ouID: "ou-abcd-1234567", ouSet: true, wantErr: "invalid --ou-id"},
+		"uppercase OU":         {ouID: "ou-abcd-1234567A", ouSet: true, wantErr: "invalid --ou-id"},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, err := selectedAWSTarget(test.accountID, test.accountSet, test.ouID, test.ouSet)
+			if test.wantErr == "" {
+				if err != nil || got != test.want {
+					t.Fatalf("selected target = %q, error %v; want %q", got, err, test.want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %v, want it to contain %q", err, test.wantErr)
+			}
+			if diagnostic := classifyError(err); diagnostic.Code != errorCodeInvalidInvocation {
+				t.Fatalf("diagnostic = %#v, want invalid invocation", diagnostic)
+			}
+		})
+	}
+}
+
 func TestOutputFormatSupportsTextAndJSONOnly(t *testing.T) {
 	t.Parallel()
 
@@ -1489,6 +1535,32 @@ func TestListOperationsPaginate(t *testing.T) {
 	}
 }
 
+func TestHierarchyOperationsRejectMalformedAWSIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	t.Run("root", func(t *testing.T) {
+		t.Parallel()
+		client := &fakeOrganizationsClient{listRootsFn: func(context.Context, *organizations.ListRootsInput) (*organizations.ListRootsOutput, error) {
+			return &organizations.ListRootsOutput{Roots: []types.Root{{Id: aws.String("ou-root-12345678")}}}, nil
+		}}
+		if _, _, err := getRoot(context.Background(), client); err == nil || !strings.Contains(err.Error(), "invalid organization root ID") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("OU parent", func(t *testing.T) {
+		t.Parallel()
+		client := &fakeOrganizationsClient{listParentsFn: func(context.Context, *organizations.ListParentsInput) (*organizations.ListParentsOutput, error) {
+			return &organizations.ListParentsOutput{Parents: []types.Parent{{
+				Id: aws.String("ou-x-12345678"), Type: types.ParentTypeOrganizationalUnit,
+			}}}, nil
+		}}
+		if _, err := listParents(context.Background(), client, "123456789012"); err == nil || !strings.Contains(err.Error(), "invalid ID") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
 func TestBuildOrganizationTreeAccountPathWalksUpwardAndListsInheritedPolicies(t *testing.T) {
 	t.Parallel()
 
@@ -1558,6 +1630,179 @@ func TestBuildOrganizationTreeAccountPathWalksUpwardAndListsInheritedPolicies(t 
 		"            |-- SCP: FullAWSAccess [p-full0001] (Attached to: organizational_unit Production [ou-root-12345678]; Inherited: true)\n"
 	if output != want {
 		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output, want)
+	}
+}
+
+func TestBuildOrganizationTreeOrganizationalUnitPathWalksUpwardAndListsInheritedPolicies(t *testing.T) {
+	t.Parallel()
+
+	const (
+		rootID   = "r-root"
+		parentID = "ou-root-11111111"
+		targetID = "ou-root-22222222"
+	)
+	listChildrenCalls := 0
+	client := &fakeOrganizationsClient{
+		listChildrenFn: func(context.Context, *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+			listChildrenCalls++
+			return nil, errors.New("single-OU lookup must not list children")
+		},
+		describeAccountFn: func(context.Context, *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+			return nil, errors.New("single-OU lookup must not describe accounts")
+		},
+		describeOrganizationalUnit: func(_ context.Context, input *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error) {
+			name := map[string]string{parentID: "Production", targetID: "Workloads"}[aws.ToString(input.OrganizationalUnitId)]
+			return &organizations.DescribeOrganizationalUnitOutput{OrganizationalUnit: &types.OrganizationalUnit{
+				Id: input.OrganizationalUnitId, Name: aws.String(name),
+			}}, nil
+		},
+		listParentsFn: func(_ context.Context, input *organizations.ListParentsInput) (*organizations.ListParentsOutput, error) {
+			switch aws.ToString(input.ChildId) {
+			case targetID:
+				return &organizations.ListParentsOutput{Parents: []types.Parent{{Id: aws.String(parentID), Type: types.ParentTypeOrganizationalUnit}}}, nil
+			case parentID:
+				return &organizations.ListParentsOutput{Parents: []types.Parent{{Id: aws.String(rootID), Type: types.ParentTypeRoot}}}, nil
+			default:
+				return nil, errors.New("unexpected parent lookup")
+			}
+		},
+		listPoliciesForTargetFn: func(_ context.Context, input *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			policies := map[string]types.PolicySummary{
+				rootID:   {Id: aws.String("p-root0001"), Name: aws.String("RootPolicy"), Type: types.PolicyTypeServiceControlPolicy},
+				parentID: {Id: aws.String("p-parent01"), Name: aws.String("ParentPolicy"), Type: types.PolicyTypeServiceControlPolicy},
+				targetID: {Id: aws.String("p-target01"), Name: aws.String("TargetPolicy"), Type: types.PolicyTypeServiceControlPolicy},
+			}
+			return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{policies[aws.ToString(input.TargetId)]}}, nil
+		},
+	}
+
+	tree, err := buildOrganizationTree(context.Background(), client, targetID, rootID, "Organization Root", "999999999999")
+	if err != nil {
+		t.Fatalf("build OU path: %v", err)
+	}
+	if listChildrenCalls != 0 {
+		t.Fatalf("list children called %d times", listChildrenCalls)
+	}
+	if len(tree.Children) != 1 || len(tree.Children[0].Children) != 1 {
+		t.Fatalf("unexpected OU path: %+v", tree)
+	}
+	parent := tree.Children[0]
+	target := parent.Children[0]
+	if parent.ID != parentID || target.ID != targetID || len(target.Children) != 0 {
+		t.Fatalf("unexpected OU path nodes: parent=%+v target=%+v", parent, target)
+	}
+	if strings.Join(target.SCPs, ",") != "ParentPolicy,RootPolicy,TargetPolicy" {
+		t.Fatalf("target OU SCPs = %v", target.SCPs)
+	}
+	wantInherited := map[string]bool{"RootPolicy": true, "ParentPolicy": true, "TargetPolicy": false}
+	for _, attachment := range target.SCPAttachments {
+		if attachment.Inherited != wantInherited[attachment.PolicyName] {
+			t.Fatalf("attachment %+v has unexpected inheritance", attachment)
+		}
+	}
+}
+
+func TestInspectOrganizationalUnitDirectlyUnderRootSkipsDescribeOrganization(t *testing.T) {
+	t.Parallel()
+
+	const (
+		rootID   = "r-root"
+		targetID = "ou-root-12345678"
+	)
+	describeOrganizationCalls := 0
+	client := &fakeOrganizationsClient{
+		describeOrganizationFn: func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+			describeOrganizationCalls++
+			return nil, errors.New("OU inspection must not describe the organization")
+		},
+		describeOrganizationalUnit: func(context.Context, *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error) {
+			return &organizations.DescribeOrganizationalUnitOutput{OrganizationalUnit: &types.OrganizationalUnit{
+				Id: aws.String(targetID), Name: aws.String("Production"),
+			}}, nil
+		},
+		listParentsFn: func(context.Context, *organizations.ListParentsInput) (*organizations.ListParentsOutput, error) {
+			return &organizations.ListParentsOutput{Parents: []types.Parent{{
+				Id: aws.String(rootID), Type: types.ParentTypeRoot,
+			}}}, nil
+		},
+	}
+
+	var output bytes.Buffer
+	if err := inspectOrganizationTarget(
+		context.Background(), &output, client, targetID, rootID, "Organization Root", json,
+	); err != nil {
+		t.Fatalf("inspect OU: %v", err)
+	}
+	if describeOrganizationCalls != 0 {
+		t.Fatalf("DescribeOrganization called %d times, want 0", describeOrganizationCalls)
+	}
+
+	var tree organizationNode
+	if err := encodingjson.Unmarshal(output.Bytes(), &tree); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if len(tree.Children) != 1 || tree.Children[0].ID != targetID || len(tree.Children[0].Children) != 0 {
+		t.Fatalf("unexpected direct-child OU path: %+v", tree)
+	}
+}
+
+func TestInspectAccountAndFullOrganizationDescribeOrganization(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("stop after DescribeOrganization")
+	for _, targetID := range []string{"123456789012", "all"} {
+		targetID := targetID
+		t.Run(targetID, func(t *testing.T) {
+			t.Parallel()
+			describeOrganizationCalls := 0
+			client := &fakeOrganizationsClient{describeOrganizationFn: func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+				describeOrganizationCalls++
+				return nil, sentinel
+			}}
+
+			err := inspectOrganizationTarget(
+				context.Background(), &bytes.Buffer{}, client, targetID, "r-root", "Organization Root", json,
+			)
+			if !errors.Is(err, sentinel) {
+				t.Fatalf("error = %v, want sentinel error", err)
+			}
+			if describeOrganizationCalls != 1 {
+				t.Fatalf("DescribeOrganization called %d times, want 1", describeOrganizationCalls)
+			}
+		})
+	}
+}
+
+func TestBuildOrganizationalUnitPathRejectsInvalidRootRelationshipsWithoutPanic(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		targetID string
+		rootID   string
+		wantErr  string
+	}{
+		"target reported as root": {
+			targetID: "ou-root-12345678", rootID: "ou-root-12345678", wantErr: "invalid root ID",
+		},
+		"OU belongs to another root": {
+			targetID: "ou-other-12345678", rootID: "r-root", wantErr: "does not belong to root",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := buildOrganizationalUnitPath(
+				context.Background(),
+				&fakeOrganizationsClient{},
+				test.targetID,
+				test.rootID,
+				newOrganizationCache(test.rootID, ""),
+			)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %v, want it to contain %q", err, test.wantErr)
+			}
+		})
 	}
 }
 

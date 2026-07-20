@@ -102,17 +102,18 @@ type authStatusOrganizationsClient interface {
 }
 
 var (
-	accountID        string
-	format           outputFormat = json
-	profile          string
-	authStatusFormat outputFormat = json
-	awsCmd                        = &cobra.Command{
-		Use:   "aws --account-id <12-digit-id|all>",
+	accountID            string
+	organizationalUnitID string
+	format               outputFormat = json
+	profile              string
+	authStatusFormat     outputFormat = json
+	awsCmd                            = &cobra.Command{
+		Use:   "aws (--account-id <12-digit-id|all> | --ou-id <ou-id>)",
 		Short: "Show AWS paths and localized SCP attachments for OUs and accounts",
 		Long: `Show the AWS Organizations hierarchy and names from service control
 policy (SCP) summaries returned for every OU and member account. Each entity
 shows its direct attachments and attachments inherited from its root/OU
-ancestors. Inspect one account path or the entire organization.
+ancestors. Inspect one account or OU path, or the entire organization.
 
 JSON output is used by default.
 
@@ -129,6 +130,7 @@ access to AWS Organizations. This command does not prompt for input or start an
 AWS SSO login. If SSO credentials are missing or expired, run the suggested
 "aws sso login --profile=<name>" command separately in an interactive terminal.`,
 		Example: `  policy-scout aws --account-id 123456789012
+  policy-scout aws --ou-id ou-abcd-12345678
   policy-scout aws --profile security-audit --account-id 123456789012
   policy-scout aws --account-id 123456789012 --output-format json
   policy-scout aws --account-id 123456789012 --timeout 30s --max-retries 3
@@ -171,6 +173,7 @@ func init() {
 	awsCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS shared-config profile to use (overrides AWS_PROFILE)")
 
 	awsCmd.Flags().StringVar(&accountID, "account-id", "", `AWS account ID to inspect (exactly 12 digits), or "all" for the entire organization`)
+	awsCmd.Flags().StringVar(&organizationalUnitID, "ou-id", "", "AWS organizational unit ID to inspect")
 
 	awsCmd.Flags().VarP(&format, "output-format", "o", `output format: "json" or "text"`)
 	if err := awsCmd.RegisterFlagCompletionFunc("output-format", outputFormatCompletion); err != nil {
@@ -274,7 +277,16 @@ func runAWSCommand(cmd *cobra.Command) error {
 	ctx, cancel := controls.context(cmd.Context())
 	defer cancel()
 
-	err = describeAccount(ctx, cmd.OutOrStdout(), accountID, profile, controls.configLoadOptions()...)
+	targetID, err := selectedAWSTarget(
+		accountID,
+		cmd.Flags().Changed("account-id"),
+		organizationalUnitID,
+		cmd.Flags().Changed("ou-id"),
+	)
+	if err != nil {
+		return err
+	}
+	err = describeTarget(ctx, cmd.OutOrStdout(), targetID, profile, controls.configLoadOptions()...)
 	return controls.explainError(err)
 }
 
@@ -507,14 +519,22 @@ func describeAccount(
 	writer io.Writer,
 	targetAccountID, selectedProfile string,
 	configOptions ...func(*config.LoadOptions) error,
+) error {
+	if err := validateAccountID(targetAccountID); err != nil {
+		return newInvalidInvocationError(fmt.Errorf("invalid --account-id %q: must be \"all\" or exactly 12 decimal digits", targetAccountID))
+	}
+	return describeTarget(ctx, writer, targetAccountID, selectedProfile, configOptions...)
+}
+
+func describeTarget(
+	ctx context.Context,
+	writer io.Writer,
+	targetID, selectedProfile string,
+	configOptions ...func(*config.LoadOptions) error,
 ) (err error) {
 	defer func() {
 		err = addSSORemediation(err, selectedProfile)
 	}()
-
-	if err := validateAccountID(targetAccountID); err != nil {
-		return newInvalidInvocationError(fmt.Errorf("invalid --account-id %q: must be \"all\" or exactly 12 decimal digits", targetAccountID))
-	}
 
 	cfg, err := loadAWSConfig(ctx, selectedProfile, config.LoadDefaultConfig, configOptions...)
 	if err != nil {
@@ -530,12 +550,7 @@ func describeAccount(
 		return fmt.Errorf("get organization root ID: %w", err)
 	}
 
-	managementAccountID, err := getManagementAccountID(ctx, client)
-	if err != nil {
-		return err
-	}
-
-	return displayOrganizationTree(ctx, writer, client, targetAccountID, rootID, rootName, managementAccountID, format)
+	return inspectOrganizationTarget(ctx, writer, client, targetID, rootID, rootName, format)
 }
 
 type scpAttachmentTarget struct {
@@ -717,16 +732,35 @@ func displayOrganizationTree(
 	return writeOrganizationTree(writer, root, outputFormat)
 }
 
+func inspectOrganizationTarget(
+	ctx context.Context,
+	writer io.Writer,
+	client organizationsClient,
+	targetID, rootID, rootName string,
+	outputFormat outputFormat,
+) error {
+	managementAccountID := ""
+	if !strings.HasPrefix(targetID, "ou-") {
+		var err error
+		managementAccountID, err = getManagementAccountID(ctx, client)
+		if err != nil {
+			return err
+		}
+	}
+	return displayOrganizationTree(ctx, writer, client, targetID, rootID, rootName, managementAccountID, outputFormat)
+}
+
 func buildOrganizationTree(
 	ctx context.Context,
 	client organizationsClient,
-	targetAccountID, rootID, rootName, managementAccountID string,
+	targetID, rootID, rootName, managementAccountID string,
 ) (organizationNode, error) {
 	root := organizationNode{SchemaVersion: organizationJSONSchemaVersion, Type: rootEntityType, ID: rootID}
 	cache := newOrganizationCache(rootID, rootName)
 
 	var err error
-	if strings.EqualFold(targetAccountID, "all") {
+	switch {
+	case strings.EqualFold(targetID, "all"):
 		root.Children, err = buildOrganizationChildren(
 			ctx,
 			client,
@@ -737,8 +771,10 @@ func buildOrganizationTree(
 			map[string]bool{},
 			cache,
 		)
-	} else {
-		root.Children, err = buildAccountPath(ctx, client, targetAccountID, rootID, managementAccountID, cache)
+	case strings.HasPrefix(targetID, "ou-"):
+		root.Children, err = buildOrganizationalUnitPath(ctx, client, targetID, rootID, cache)
+	default:
+		root.Children, err = buildAccountPath(ctx, client, targetID, rootID, managementAccountID, cache)
 	}
 	if err != nil {
 		return organizationNode{}, err
@@ -758,31 +794,9 @@ func buildAccountPath(
 	}
 	cache.setEntityName(targetAccountID, aws.ToString(account.Name))
 
-	path := []string{targetAccountID}
-	visited := map[string]bool{targetAccountID: true}
-	for childID := targetAccountID; childID != rootID; {
-		parents, err := listParents(ctx, client, childID)
-		if err != nil {
-			return nil, fmt.Errorf("list parents for %s: %w", childID, err)
-		}
-		if len(parents) != 1 {
-			return nil, fmt.Errorf("expected exactly one parent for %s, got %d", childID, len(parents))
-		}
-		parentID := aws.ToString(parents[0].Id)
-		if parents[0].Type == types.ParentTypeRoot && parentID != rootID {
-			return nil, fmt.Errorf("AWS returned root parent %s, expected %s", parentID, rootID)
-		}
-		if visited[parentID] {
-			return nil, fmt.Errorf("cycle detected in organization hierarchy at %s", parentID)
-		}
-		visited[parentID] = true
-		path = append(path, parentID)
-		childID = parentID
-	}
-
-	accountPath := make([]string, len(path))
-	for index := range path {
-		accountPath[len(path)-1-index] = path[index]
+	accountPath, err := buildAncestorPath(ctx, client, targetAccountID, rootID)
+	if err != nil {
+		return nil, err
 	}
 
 	ouNodes := make([]organizationNode, 0, len(accountPath)-2)
@@ -814,6 +828,88 @@ func buildAccountPath(
 		child = ouNodes[index]
 	}
 	return []organizationNode{child}, nil
+}
+
+func buildOrganizationalUnitPath(
+	ctx context.Context,
+	client organizationsClient,
+	targetOrganizationalUnitID, rootID string,
+	cache *organizationCache,
+) ([]organizationNode, error) {
+	path, err := buildAncestorPath(ctx, client, targetOrganizationalUnitID, rootID)
+	if err != nil {
+		return nil, err
+	}
+	if len(path) < 2 || path[0] != rootID || path[len(path)-1] != targetOrganizationalUnitID {
+		return nil, fmt.Errorf("invalid organizational unit path from root %s to %s", rootID, targetOrganizationalUnitID)
+	}
+
+	ouNodes := make([]organizationNode, 0, len(path)-1)
+	for index := 1; index < len(path); index++ {
+		ouID := path[index]
+		ou, err := getOU(ctx, client, ouID)
+		if err != nil {
+			return nil, fmt.Errorf("get organizational unit %s: %w", ouID, err)
+		}
+		ouName := aws.ToString(ou.Name)
+		cache.setEntityName(ouID, ouName)
+		ouNode, err := buildOrganizationalUnitNode(ctx, client, ouID, ouName, path[:index+1], cache)
+		if err != nil {
+			return nil, err
+		}
+		ouNodes = append(ouNodes, ouNode)
+	}
+
+	child := ouNodes[len(ouNodes)-1]
+	for index := len(ouNodes) - 2; index >= 0; index-- {
+		ouNodes[index].Children = []organizationNode{child}
+		child = ouNodes[index]
+	}
+	return []organizationNode{child}, nil
+}
+
+func buildAncestorPath(
+	ctx context.Context,
+	client organizations.ListParentsAPIClient,
+	targetID, rootID string,
+) ([]string, error) {
+	if strings.HasPrefix(targetID, "ou-") {
+		if err := validateOrganizationalUnitForRoot(targetID, rootID); err != nil {
+			return nil, err
+		}
+	}
+	path := []string{targetID}
+	visited := map[string]bool{targetID: true}
+	for childID := targetID; childID != rootID; {
+		parents, err := listParents(ctx, client, childID)
+		if err != nil {
+			return nil, fmt.Errorf("list parents for %s: %w", childID, err)
+		}
+		if len(parents) != 1 {
+			return nil, fmt.Errorf("expected exactly one parent for %s, got %d", childID, len(parents))
+		}
+		parentID := aws.ToString(parents[0].Id)
+		if parents[0].Type == types.ParentTypeRoot && parentID != rootID {
+			return nil, fmt.Errorf("AWS returned root parent %s, expected %s", parentID, rootID)
+		}
+		if parents[0].Type == types.ParentTypeOrganizationalUnit {
+			if err := validateOrganizationalUnitForRoot(parentID, rootID); err != nil {
+				return nil, fmt.Errorf("AWS returned invalid organizational unit parent %s for %s: %w", parentID, childID, err)
+			}
+		}
+		if visited[parentID] {
+			return nil, fmt.Errorf("cycle detected in organization hierarchy at %s", parentID)
+		}
+		visited[parentID] = true
+		path = append(path, parentID)
+		childID = parentID
+	}
+
+	result := make([]string, len(path))
+	for index := range path {
+		result[len(path)-1-index] = path[index]
+	}
+	return result, nil
 }
 
 // buildOrganizationChildren owns hierarchy ordering: accounts precede OUs and each group is sorted by ID.
@@ -1258,8 +1354,8 @@ func getRoot(ctx context.Context, client organizations.ListRootsAPIClient) (stri
 		}
 		for _, root := range page.Roots {
 			rootID := aws.ToString(root.Id)
-			if rootID == "" {
-				return "", "", errors.New("organization root has no ID")
+			if err := validateRootID(rootID); err != nil {
+				return "", "", fmt.Errorf("AWS returned invalid organization root ID %q: %w", rootID, err)
 			}
 			rootName := aws.ToString(root.Name)
 			if existingName, found := rootNamesByID[rootID]; found && existingName != "" && rootName != "" && existingName != rootName {
@@ -1301,12 +1397,12 @@ func listParents(ctx context.Context, client organizations.ListParentsAPIClient,
 			}
 			switch parent.Type {
 			case types.ParentTypeRoot:
-				if !strings.HasPrefix(parentID, "r-") {
-					return nil, fmt.Errorf("AWS returned root parent with invalid ID %s for %s", parentID, entityID)
+				if err := validateRootID(parentID); err != nil {
+					return nil, fmt.Errorf("AWS returned root parent with invalid ID %s for %s: %w", parentID, entityID, err)
 				}
 			case types.ParentTypeOrganizationalUnit:
-				if !strings.HasPrefix(parentID, "ou-") {
-					return nil, fmt.Errorf("AWS returned organizational unit parent with invalid ID %s for %s", parentID, entityID)
+				if err := validateOrganizationalUnitID(parentID); err != nil {
+					return nil, fmt.Errorf("AWS returned organizational unit parent with invalid ID %s for %s: %w", parentID, entityID, err)
 				}
 			default:
 				return nil, fmt.Errorf("AWS returned parent %s with invalid type %s for %s", parentID, parent.Type, entityID)
@@ -1407,6 +1503,71 @@ func validateAccountID(value string) error {
 		return nil
 	}
 	return validateStrictAccountID(value)
+}
+
+func selectedAWSTarget(
+	targetAccountID string,
+	accountIDSet bool,
+	targetOrganizationalUnitID string,
+	organizationalUnitIDSet bool,
+) (string, error) {
+	if accountIDSet && organizationalUnitIDSet {
+		return "", newInvalidInvocationError(errors.New("--account-id and --ou-id are mutually exclusive"))
+	}
+	if organizationalUnitIDSet {
+		if err := validateOrganizationalUnitID(targetOrganizationalUnitID); err != nil {
+			return "", newInvalidInvocationError(fmt.Errorf("invalid --ou-id %q: %w", targetOrganizationalUnitID, err))
+		}
+		return targetOrganizationalUnitID, nil
+	}
+	if accountIDSet {
+		if err := validateAccountID(targetAccountID); err != nil {
+			return "", newInvalidInvocationError(fmt.Errorf("invalid --account-id %q: must be \"all\" or exactly 12 decimal digits", targetAccountID))
+		}
+		return targetAccountID, nil
+	}
+	return "", newInvalidInvocationError(errors.New("invalid --account-id \"\": must be \"all\" or exactly 12 decimal digits"))
+}
+
+func validateRootID(value string) error {
+	if !strings.HasPrefix(value, "r-") || len(value) < 6 || len(value) > 34 {
+		return errors.New("must match r-<4-32 lowercase letters or digits>")
+	}
+	for _, character := range value[2:] {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+			return errors.New("must match r-<4-32 lowercase letters or digits>")
+		}
+	}
+	return nil
+}
+
+func validateOrganizationalUnitID(value string) error {
+	parts := strings.Split(value, "-")
+	if len(parts) != 3 || parts[0] != "ou" || len(parts[1]) < 4 || len(parts[1]) > 32 || len(parts[2]) < 8 || len(parts[2]) > 32 {
+		return errors.New("must match ou-<4-32 lowercase letters or digits>-<8-32 lowercase letters or digits>")
+	}
+	for _, part := range parts[1:] {
+		for _, character := range part {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+				return errors.New("must match ou-<4-32 lowercase letters or digits>-<8-32 lowercase letters or digits>")
+			}
+		}
+	}
+	return nil
+}
+
+func validateOrganizationalUnitForRoot(organizationalUnitID, rootID string) error {
+	if err := validateOrganizationalUnitID(organizationalUnitID); err != nil {
+		return fmt.Errorf("invalid organizational unit ID %q: %w", organizationalUnitID, err)
+	}
+	if err := validateRootID(rootID); err != nil {
+		return fmt.Errorf("invalid root ID %q: %w", rootID, err)
+	}
+	rootComponent := strings.TrimPrefix(rootID, "r-")
+	if !strings.HasPrefix(organizationalUnitID, "ou-"+rootComponent+"-") {
+		return fmt.Errorf("organizational unit %s does not belong to root %s", organizationalUnitID, rootID)
+	}
+	return nil
 }
 
 func validateStrictAccountID(value string) error {

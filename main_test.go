@@ -82,8 +82,9 @@ func TestAWSSubcommandHelpIsPublicAndAWSFree(t *testing.T) {
 
 	assertSuccessfulProcess(t, result, "AWS help")
 	for _, expected := range []string{
-		"Usage:\n  policy-scout aws --account-id <12-digit-id|all> [flags]",
+		"Usage:\n  policy-scout aws (--account-id <12-digit-id|all> | --ou-id <ou-id>) [flags]",
 		"--account-id",
+		"--ou-id",
 		"--output-format",
 		"--profile",
 		"--timeout",
@@ -115,6 +116,26 @@ func TestInvalidInvocationsUseStderrAndStableExitStatuses(t *testing.T) {
 			name: "extra AWS positional argument",
 			args: []string{"aws", "--account-id", "123456789012", "extra"}, wantStatus: 2,
 			wantCode: "invalid_invocation", wantMessagePart: "extra",
+		},
+		{
+			name: "empty OU ID",
+			args: []string{"aws", "--ou-id="}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--ou-id",
+		},
+		{
+			name: "empty account ID",
+			args: []string{"aws", "--account-id="}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--account-id",
+		},
+		{
+			name: "both AWS target flags including empty OU",
+			args: []string{"aws", "--account-id", "123456789012", "--ou-id="}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "mutually exclusive",
+		},
+		{
+			name: "empty account ID and OU ID",
+			args: []string{"aws", "--account-id=", "--ou-id", "ou-abcd-12345678"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "mutually exclusive",
 		},
 		{
 			// Extra positional arguments to version are classified as invalid_invocation,

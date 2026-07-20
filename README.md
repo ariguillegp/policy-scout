@@ -1,6 +1,6 @@
 # policy-scout
 
-Explore AWS Organizations service control policy (SCP) attachments from a terminal. Policy Scout shows where an account sits in the organization and names from SCP summaries directly attached to that account or to a root/OU in its ancestor path, without requiring several AWS CLI calls or manual console navigation.
+Explore AWS Organizations service control policy (SCP) attachments from a terminal. Policy Scout shows where an account or organizational unit sits in the organization and names from SCP summaries directly attached to that target or to a root/OU in its ancestor path, without requiring several AWS CLI calls or manual console navigation.
 
 ## Table of Contents
 
@@ -18,7 +18,7 @@ Explore AWS Organizations service control policy (SCP) attachments from a termin
 
 ## Features
 
-- Display one account's path from the organization root, or the complete tree with `--account-id all`.
+- Display one account's or organizational unit's path from the organization root, or the complete tree with `--account-id all`.
 - Display names and attachment provenance from SCP summaries for every returned OU and member account, including inherited attachments from ancestors.
 - Identify the management account, whose users and roles are not affected by SCPs.
 - Produce structured JSON output (default) or a human-readable text-based tree.
@@ -77,7 +77,7 @@ If the SDK reports a missing or expired SSO session, both `policy-scout aws` and
 The selected AWS identity must be able to inspect the organization. Depending on the requested scope, Policy Scout calls:
 
 - `organizations:ListRoots`
-- `organizations:DescribeOrganization`
+- `organizations:DescribeOrganization` when inspecting an account or the entire organization
 - `organizations:DescribeAccount`
 - `organizations:DescribeOrganizationalUnit`
 - `organizations:ListParents`
@@ -115,6 +115,12 @@ Inspect one account (JSON is the default):
 policy-scout aws --account-id 339712974046
 ```
 
+Inspect one organizational unit and its inherited SCP attachments:
+
+```bash
+policy-scout aws --ou-id ou-cww9-x2atbcle
+```
+
 Select a named AWS shared-config profile explicitly:
 
 ```bash
@@ -131,6 +137,7 @@ Request a terminal-friendly tree:
 
 ```bash
 policy-scout aws --account-id 339712974046 --output-format text
+policy-scout aws --ou-id ou-cww9-x2atbcle --output-format text
 policy-scout aws --account-id all --output-format text
 ```
 

@@ -58,6 +58,7 @@ func TestAWSHelpDocumentsOutputFormatMetavarAndDefault(t *testing.T) {
 		"--timeout",
 		"--max-retries",
 		"policy-scout aws --account-id 123456789012",
+		"policy-scout aws --ou-id ou-abcd-12345678",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("aws help missing %q:\n%s", expected, output)
