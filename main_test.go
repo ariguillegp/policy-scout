@@ -67,7 +67,7 @@ func TestRootNoArgumentsMatchesRootHelp(t *testing.T) {
 	for _, expected := range []string{
 		"Inspect cloud organization policies from one CLI",
 		"Usage:\n  policy-scout [flags]\n  policy-scout [command]",
-		"Show AWS paths and SCP summary names",
+		"Show AWS paths and localized SCP attachments",
 		"Print binary and JSON schema versions",
 		"--error-format",
 	} {

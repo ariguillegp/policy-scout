@@ -280,8 +280,8 @@ func TestCommandContractIsAutomationFriendly(t *testing.T) {
 		"--max-retries",
 		"does not prompt for input or start an",
 		"aws sso login --profile=<name>",
-		"direct attachments to an account",
-		"root/OU in its ancestor path",
+		"every OU and member account",
+		"direct attachments and attachments inherited",
 		"does not retrieve policy documents",
 		"SCP Allow/Deny",
 		"IAM policies",
@@ -1328,12 +1328,12 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
 		"    |-- Account: Account 111111111111 (Management Account) [111111111111] (SCPs do not affect management-account users or roles)\n" +
 		"    |-- Account: Account 222222222222 [222222222222] (SCP summary names from account/ancestor attachments: none)\n" +
 		"    |-- Account: Account 333333333333 [333333333333] (SCP summary names from account/ancestor attachments: none)\n" +
-		"    |-- OU: OU ou-root-aaaa1111 [ou-root-aaaa1111]\n" +
+		"    |-- OU: OU ou-root-aaaa1111 [ou-root-aaaa1111] (SCP summary names from OU/ancestor attachments: none)\n" +
 		"        |-- Account: Account 444444444444 [444444444444] (SCP summary names from account/ancestor attachments: none)\n" +
 		"        |-- Account: Account 555555555555 [555555555555] (SCP summary names from account/ancestor attachments: none)\n" +
-		"        |-- OU: OU ou-root-cccc3333 [ou-root-cccc3333]\n" +
-		"        |-- OU: OU ou-root-dddd4444 [ou-root-dddd4444]\n" +
-		"    |-- OU: OU ou-root-bbbb2222 [ou-root-bbbb2222]\n"
+		"        |-- OU: OU ou-root-cccc3333 [ou-root-cccc3333] (SCP summary names from OU/ancestor attachments: none)\n" +
+		"        |-- OU: OU ou-root-dddd4444 [ou-root-dddd4444] (SCP summary names from OU/ancestor attachments: none)\n" +
+		"    |-- OU: OU ou-root-bbbb2222 [ou-root-bbbb2222] (SCP summary names from OU/ancestor attachments: none)\n"
 
 	tests := []struct {
 		format outputFormat
@@ -1549,13 +1549,88 @@ func TestBuildOrganizationTreeAccountPathWalksUpwardAndListsInheritedPolicies(t 
 	}
 	output := renderOrganizationTreeText(tree)
 	want := "|-- Root: [r-root]\n" +
-		"    |-- OU: Production [ou-root-12345678]\n" +
+		"    |-- OU: Production [ou-root-12345678] (SCP summary names from OU/ancestor attachments: FullAWSAccess)\n" +
+		"        |-- SCP: FullAWSAccess [p-full0001] (Attached to: root Organization Root [r-root]; Inherited: true)\n" +
+		"        |-- SCP: FullAWSAccess [p-full0001] (Attached to: organizational_unit Production [ou-root-12345678]; Inherited: false)\n" +
 		"        |-- Account: Application [123456789012] (SCP summary names from account/ancestor attachments: DenyS3, FullAWSAccess)\n" +
 		"            |-- SCP: DenyS3 [p-deny0001] (Attached to: account Application [123456789012]; Inherited: false)\n" +
 		"            |-- SCP: FullAWSAccess [p-full0001] (Attached to: root Organization Root [r-root]; Inherited: true)\n" +
 		"            |-- SCP: FullAWSAccess [p-full0001] (Attached to: organizational_unit Production [ou-root-12345678]; Inherited: true)\n"
 	if output != want {
 		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output, want)
+	}
+}
+
+func TestBuildOrganizationTreeAllLocalizesPoliciesOnOrganizationalUnits(t *testing.T) {
+	t.Parallel()
+
+	const (
+		rootID   = "r-root"
+		ouID     = "ou-root-12345678"
+		policyID = "p-full0001"
+	)
+	policyCalls := make(map[string]int)
+	client := &fakeOrganizationsClient{
+		listChildrenFn: func(_ context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+			parentID := aws.ToString(input.ParentId)
+			if parentID == rootID && input.ChildType == types.ChildTypeOrganizationalUnit {
+				return &organizations.ListChildrenOutput{Children: []types.Child{{
+					Id: aws.String(ouID), Type: types.ChildTypeOrganizationalUnit,
+				}}}, nil
+			}
+			if (parentID == rootID && input.ChildType == types.ChildTypeAccount) || parentID == ouID {
+				return &organizations.ListChildrenOutput{}, nil
+			}
+			return nil, fmt.Errorf("unexpected children lookup for %s/%s", parentID, input.ChildType)
+		},
+		describeOrganizationalUnit: func(context.Context, *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error) {
+			return &organizations.DescribeOrganizationalUnitOutput{OrganizationalUnit: &types.OrganizationalUnit{
+				Id: aws.String(ouID), Name: aws.String("Production"),
+			}}, nil
+		},
+		listPoliciesForTargetFn: func(_ context.Context, input *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			targetID := aws.ToString(input.TargetId)
+			policyCalls[targetID]++
+			if targetID != rootID && targetID != ouID {
+				return nil, fmt.Errorf("unexpected policy lookup for %s", targetID)
+			}
+			return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{{
+				Id: aws.String(policyID), Name: aws.String("FullAWSAccess"), Type: types.PolicyTypeServiceControlPolicy,
+			}}}, nil
+		},
+	}
+
+	tree, err := buildOrganizationTree(context.Background(), client, "all", rootID, "Organization Root", "999999999999")
+	if err != nil {
+		t.Fatalf("build full organization: %v", err)
+	}
+	if len(tree.Children) != 1 {
+		t.Fatalf("root children = %d, want 1", len(tree.Children))
+	}
+	ou := tree.Children[0]
+	wantAttachments := []scpAttachment{
+		{
+			PolicyID:   policyID,
+			PolicyName: "FullAWSAccess",
+			AttachedTo: scpAttachmentTarget{Type: rootEntityType, ID: rootID, Name: "Organization Root"},
+			Inherited:  true,
+		},
+		{
+			PolicyID:   policyID,
+			PolicyName: "FullAWSAccess",
+			AttachedTo: scpAttachmentTarget{Type: organizationalUnitEntityType, ID: ouID, Name: "Production"},
+			Inherited:  false,
+		},
+	}
+	if ou.Type != organizationalUnitEntityType || ou.ID != ouID || ou.Name != "Production" ||
+		!reflect.DeepEqual(ou.SCPs, []string{"FullAWSAccess"}) ||
+		!reflect.DeepEqual(ou.SCPAttachments, wantAttachments) {
+		t.Fatalf("unexpected organizational unit: %+v", ou)
+	}
+	for _, targetID := range []string{rootID, ouID} {
+		if policyCalls[targetID] != 1 {
+			t.Fatalf("policies for %s listed %d times, want once", targetID, policyCalls[targetID])
+		}
 	}
 }
 
@@ -1909,7 +1984,7 @@ func TestOrganizationTreeRenderersStayInParityWithoutAdditionalAWSCalls(t *testi
 	textOutput := renderOrganizationTreeText(tree)
 	want := "|-- Root: [r-root]\n" +
 		"    |-- Account: Management (Management Account) [111111111111] (SCPs do not affect management-account users or roles)\n" +
-		"    |-- OU: Production [ou-root-12345678]\n" +
+		"    |-- OU: Production [ou-root-12345678] (SCP summary names from OU/ancestor attachments: none)\n" +
 		"        |-- Account: Member [222222222222] (SCP summary names from account/ancestor attachments: none)\n" +
 		"        |-- Account: Member [333333333333] (SCP summary names from account/ancestor attachments: none)\n"
 	if textOutput != want {
@@ -2384,6 +2459,24 @@ func TestDisplayOrganizationTreeJSONBuildsAccountPath(t *testing.T) {
 	ou := result.Children[0]
 	if ou.Type != "organizational_unit" || ou.ID != ouID || ou.Name != "Production" || len(ou.Children) != 1 {
 		t.Fatalf("unexpected organizational unit: %+v", ou)
+	}
+	wantOUAttachments := []scpAttachment{
+		{
+			PolicyID:   "p-regions01",
+			PolicyName: "DenyRegions",
+			AttachedTo: scpAttachmentTarget{Type: "organizational_unit", ID: ouID, Name: "Production"},
+			Inherited:  false,
+		},
+		{
+			PolicyID:   "p-full0001",
+			PolicyName: "FullAWSAccess",
+			AttachedTo: scpAttachmentTarget{Type: "root", ID: rootID, Name: "Organization Root"},
+			Inherited:  true,
+		},
+	}
+	if strings.Join(ou.SCPs, ",") != "DenyRegions,FullAWSAccess" ||
+		!reflect.DeepEqual(ou.SCPAttachments, wantOUAttachments) {
+		t.Fatalf("unexpected OU policies: %+v", ou)
 	}
 	account := ou.Children[0]
 	if account.Type != "account" || account.ID != accountID || account.Name != "Application" ||

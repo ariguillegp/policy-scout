@@ -108,11 +108,13 @@ var (
 	authStatusFormat outputFormat = json
 	awsCmd                        = &cobra.Command{
 		Use:   "aws --account-id <12-digit-id|all>",
-		Short: "Show AWS paths and SCP summary names from account/ancestor attachments",
+		Short: "Show AWS paths and localized SCP attachments for OUs and accounts",
 		Long: `Show the AWS Organizations hierarchy and names from service control
-policy (SCP) summaries returned for direct attachments to an account or to a
-root/OU in its ancestor path. Inspect one account or every account in the
-organization. JSON output is used by default.
+policy (SCP) summaries returned for every OU and member account. Each entity
+shows its direct attachments and attachments inherited from its root/OU
+ancestors. Inspect one account path or the entire organization.
+
+JSON output is used by default.
 
 Policy Scout does not retrieve policy documents or evaluate SCP Allow/Deny
 semantics, IAM policies, resource policies, permission boundaries,
@@ -792,11 +794,11 @@ func buildAccountPath(
 		}
 		ouName := aws.ToString(ou.Name)
 		cache.setEntityName(ouID, ouName)
-		ouNodes = append(ouNodes, organizationNode{
-			Type: organizationalUnitEntityType,
-			ID:   ouID,
-			Name: ouName,
-		})
+		ouNode, err := buildOrganizationalUnitNode(ctx, client, ouID, ouName, accountPath[:index+1], cache)
+		if err != nil {
+			return nil, err
+		}
+		ouNodes = append(ouNodes, ouNode)
 	}
 
 	accountNode, err := buildAccountNode(
@@ -887,19 +889,21 @@ func buildOrganizationChildren(
 		if err != nil {
 			return nil, fmt.Errorf("get organizational unit %s: %w", ouID, err)
 		}
-		cache.setEntityName(ouID, aws.ToString(ou.Name))
+		ouName := aws.ToString(ou.Name)
+		cache.setEntityName(ouID, ouName)
+		ouPath := appendPath(ancestors, ouID)
+		ouNode, err := buildOrganizationalUnitNode(ctx, client, ouID, ouName, ouPath, cache)
+		if err != nil {
+			return nil, err
+		}
 		children, err := buildOrganizationChildren(
-			ctx, client, ouID, managementAccountID, appendPath(ancestors, ouID), completed, active, cache,
+			ctx, client, ouID, managementAccountID, ouPath, completed, active, cache,
 		)
 		if err != nil {
 			return nil, err
 		}
-		nodes = append(nodes, organizationNode{
-			Type:     organizationalUnitEntityType,
-			ID:       ouID,
-			Name:     aws.ToString(ou.Name),
-			Children: children,
-		})
+		ouNode.Children = children
+		nodes = append(nodes, ouNode)
 	}
 
 	completed[parentID] = true
@@ -981,6 +985,23 @@ func buildAccountNode(
 	return node, nil
 }
 
+func buildOrganizationalUnitNode(
+	ctx context.Context,
+	client organizationsClient,
+	ouID, ouName string,
+	path []string,
+	cache *organizationCache,
+) (organizationNode, error) {
+	node := organizationNode{Type: organizationalUnitEntityType, ID: ouID, Name: ouName}
+	scpNames, attachments, err := listSCPsForPath(ctx, client, path, cache)
+	if err != nil {
+		return organizationNode{}, fmt.Errorf("get SCPs for organizational unit %s: %w", ouID, err)
+	}
+	node.SCPs = scpNames
+	node.SCPAttachments = attachments
+	return node, nil
+}
+
 func writeOutput(writer io.Writer, outputFormat string, values ...any) error {
 	_, err := fmt.Fprintf(writer, outputFormat, values...)
 	return err
@@ -1033,7 +1054,15 @@ func renderOrganizationTextNode(output *strings.Builder, node organizationNode, 
 	case rootEntityType:
 		fmt.Fprintf(output, "|-- Root: [%s]\n", node.ID)
 	case organizationalUnitEntityType:
-		fmt.Fprintf(output, "%s|-- OU: %s [%s]\n", prefix, node.Name, node.ID)
+		fmt.Fprintf(
+			output,
+			"%s|-- OU: %s [%s] (SCP summary names from OU/ancestor attachments: %s)\n",
+			prefix,
+			node.Name,
+			node.ID,
+			scpSummary(node.SCPs),
+		)
+		renderSCPAttachments(output, node.SCPAttachments, prefix)
 	case accountEntityType:
 		if node.ManagementAccount {
 			fmt.Fprintf(
@@ -1044,41 +1073,48 @@ func renderOrganizationTextNode(output *strings.Builder, node organizationNode, 
 				node.ID,
 			)
 		} else {
-			summary := strings.Join(node.SCPs, ", ")
-			if summary == "" {
-				summary = "none"
-			}
 			fmt.Fprintf(
 				output,
 				"%s|-- Account: %s [%s] (SCP summary names from account/ancestor attachments: %s)\n",
 				prefix,
 				node.Name,
 				node.ID,
-				summary,
+				scpSummary(node.SCPs),
 			)
-			for _, attachment := range node.SCPAttachments {
-				targetName := ""
-				if attachment.AttachedTo.Name != "" {
-					targetName = " " + attachment.AttachedTo.Name
-				}
-				fmt.Fprintf(
-					output,
-					"%s%s|-- SCP: %s [%s] (Attached to: %s%s [%s]; Inherited: %t)\n",
-					prefix,
-					indent,
-					attachment.PolicyName,
-					attachment.PolicyID,
-					attachment.AttachedTo.Type,
-					targetName,
-					attachment.AttachedTo.ID,
-					attachment.Inherited,
-				)
-			}
+			renderSCPAttachments(output, node.SCPAttachments, prefix)
 		}
 	}
 
 	for _, child := range node.Children {
 		renderOrganizationTextNode(output, child, prefix+indent)
+	}
+}
+
+func scpSummary(scps []string) string {
+	if len(scps) == 0 {
+		return "none"
+	}
+	return strings.Join(scps, ", ")
+}
+
+func renderSCPAttachments(output *strings.Builder, attachments []scpAttachment, prefix string) {
+	for _, attachment := range attachments {
+		targetName := ""
+		if attachment.AttachedTo.Name != "" {
+			targetName = " " + attachment.AttachedTo.Name
+		}
+		fmt.Fprintf(
+			output,
+			"%s%s|-- SCP: %s [%s] (Attached to: %s%s [%s]; Inherited: %t)\n",
+			prefix,
+			indent,
+			attachment.PolicyName,
+			attachment.PolicyID,
+			attachment.AttachedTo.Type,
+			targetName,
+			attachment.AttachedTo.ID,
+			attachment.Inherited,
+		)
 	}
 }
 
@@ -1299,7 +1335,7 @@ func listSCPsForPath(
 	for index, entityID := range path {
 		pathIndexes[entityID] = index
 	}
-	accountID := path[len(path)-1]
+	targetID := path[len(path)-1]
 	for _, entityID := range path {
 		policies, err := cache.policiesForTarget(ctx, client, entityID)
 		if err != nil {
@@ -1329,7 +1365,7 @@ func listSCPsForPath(
 					ID:   entityID,
 					Name: cache.entityName(entityID),
 				},
-				Inherited: entityID != accountID,
+				Inherited: entityID != targetID,
 			})
 		}
 	}

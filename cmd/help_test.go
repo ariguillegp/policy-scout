@@ -29,7 +29,7 @@ func TestRootHelpAdvertisesCommandsAndErrorFormat(t *testing.T) {
 		"Inspect cloud organization policies from one CLI",
 		"aws",
 		"version",
-		"Show AWS paths and SCP summary names from account/ancestor attachments",
+		"Show AWS paths and localized SCP attachments for OUs and accounts",
 		"Print binary and JSON schema versions",
 		"--error-format human|json",
 		`"human" or "json"`,

@@ -19,7 +19,7 @@ Explore AWS Organizations service control policy (SCP) attachments from a termin
 ## Features
 
 - Display one account's path from the organization root, or the complete tree with `--account-id all`.
-- Display names from SCP summaries for direct attachments to each returned member account and its ancestors.
+- Display names and attachment provenance from SCP summaries for every returned OU and member account, including inherited attachments from ancestors.
 - Identify the management account, whose users and roles are not affected by SCPs.
 - Produce structured JSON output (default) or a human-readable text-based tree.
 
@@ -214,16 +214,16 @@ JSON output is a tree rooted at the AWS organization root. Nodes use these field
 - `id`: the AWS entity ID.
 - `name`: the entity name, when applicable.
 - `management_account`: `true` for the management account.
-- `scps`: sorted, de-duplicated names from SCP summaries directly attached to a member account or to a root/OU in its ancestor path. This compatibility field is intentionally name-only and does not represent evaluated effective permissions; use `scp_attachments` when IDs or attachment locations matter.
-- `scp_attachments`: direct and inherited SCP attachment provenance for a member account. Each item contains:
+- `scps`: sorted, de-duplicated names from SCP summaries directly attached to an OU/member account or inherited from a root/OU in its ancestor path. This compatibility field is intentionally name-only and does not represent evaluated effective permissions; use `scp_attachments` when IDs or attachment locations matter.
+- `scp_attachments`: direct and inherited SCP attachment provenance localized on every OU and member account. Each item contains:
   - `policy_id` and `policy_name`: the stable policy identity and its display name.
   - `attached_to`: the `type` and `id` of the `root`, `organizational_unit`, or `account` where the policy is attached, plus its `name` when that name is already returned while building the tree.
-  - `inherited`: `false` only when the policy is attached directly to the reported account; otherwise `true`.
+  - `inherited`: `false` only when the policy is attached directly to the reported OU or account; otherwise `true`.
 - `children`: nested organization nodes.
 
 For full-organization output (`--account-id all`), both JSON and text order children deterministically: accounts come before organizational units under each parent, and each category is sorted by AWS entity ID. This order is independent of AWS response pagination and ordering.
 
-`scp_attachments` contains one item per unique policy-ID/attachment-target pair. This preserves multiple attachment locations for one policy and distinguishes different policy IDs that share a name. Its ordering is deterministic by policy name, policy ID, and then attachment position from root to account. The legacy `scps` array remains sorted and de-duplicated by name, so duplicate names must be disambiguated through `scp_attachments`.
+On each OU or account, `scp_attachments` contains one item per unique policy-ID/attachment-target pair along that entity's path. This preserves distinct attachment locations for one policy while removing duplicate API entries, and distinguishes different policy IDs that share a name. Its ordering is deterministic by policy name, policy ID, and then attachment position from root to the reported entity. The `scps` array is sorted and de-duplicated by name, so duplicate names must be disambiguated through `scp_attachments`.
 
 Fields that do not apply or contain no values may be omitted. SCP fields are omitted for the management account because SCPs do not affect its users or roles. Policy Scout lists policy summaries attached to each hierarchy target; it does not retrieve or evaluate policy documents. The successful JSON document is not wrapped in a status envelope.
 
@@ -237,6 +237,29 @@ Fields that do not apply or contain no values may be omitted. SCP fields are omi
       "type": "organizational_unit",
       "id": "ou-cww9-x2atbcle",
       "name": "Finance",
+      "scps": ["DenyRegions", "FullAWSAccess"],
+      "scp_attachments": [
+        {
+          "policy_id": "p-e5f6g7h8",
+          "policy_name": "DenyRegions",
+          "attached_to": {
+            "type": "organizational_unit",
+            "id": "ou-cww9-x2atbcle",
+            "name": "Finance"
+          },
+          "inherited": false
+        },
+        {
+          "policy_id": "p-FullAWSAccess",
+          "policy_name": "FullAWSAccess",
+          "attached_to": {
+            "type": "root",
+            "id": "r-cww9",
+            "name": "Root"
+          },
+          "inherited": true
+        }
+      ],
       "children": [
         {
           "type": "account",
@@ -286,8 +309,11 @@ Text output renders the same hierarchy as a tree:
 
 ```text
 |-- Root: [r-cww9]
-    |-- OU: Prod [ou-cww9-36h7ub42]
-        |-- OU: Finance [ou-cww9-x2atbcle]
+    |-- OU: Prod [ou-cww9-36h7ub42] (SCP summary names from OU/ancestor attachments: FullAWSAccess)
+        |-- SCP: FullAWSAccess [p-FullAWSAccess] (Attached to: root Root [r-cww9]; Inherited: true)
+        |-- OU: Finance [ou-cww9-x2atbcle] (SCP summary names from OU/ancestor attachments: DenyRegions, FullAWSAccess)
+            |-- SCP: DenyRegions [p-e5f6g7h8] (Attached to: organizational_unit Finance [ou-cww9-x2atbcle]; Inherited: false)
+            |-- SCP: FullAWSAccess [p-FullAWSAccess] (Attached to: root Root [r-cww9]; Inherited: true)
             |-- Account: aws-child1 [339712974046] (SCP summary names from account/ancestor attachments: DenyAccessS3, DenyRegions, FullAWSAccess)
                 |-- SCP: DenyAccessS3 [p-a1b2c3d4] (Attached to: account aws-child1 [339712974046]; Inherited: false)
                 |-- SCP: DenyRegions [p-e5f6g7h8] (Attached to: organizational_unit Finance [ou-cww9-x2atbcle]; Inherited: true)
