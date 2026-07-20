@@ -6,6 +6,7 @@ import (
 	encodingjson "encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"reflect"
 	"strings"
@@ -2194,6 +2195,119 @@ func TestFullOrganizationInspectionCancelsOnFailureWithoutPartialText(t *testing
 	}
 	if output.Len() != 0 {
 		t.Fatalf("failed inspection wrote partial output: %q", output.String())
+	}
+}
+
+func TestDisplayOrganizationTreeTextDoesNotWriteOutputOnLateTraversalFailure(t *testing.T) {
+	t.Parallel()
+
+	const (
+		rootID            = "r-root"
+		ouID              = "ou-root-12345678"
+		managementAccount = "111111111111"
+	)
+	client := &fakeOrganizationsClient{
+		listChildrenFn: func(_ context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+			switch aws.ToString(input.ParentId) + ":" + string(input.ChildType) {
+			case rootID + ":ACCOUNT":
+				return &organizations.ListChildrenOutput{Children: []types.Child{{
+					Id: aws.String(managementAccount), Type: types.ChildTypeAccount,
+				}}}, nil
+			case rootID + ":ORGANIZATIONAL_UNIT":
+				return &organizations.ListChildrenOutput{Children: []types.Child{{
+					Id: aws.String(ouID), Type: types.ChildTypeOrganizationalUnit,
+				}}}, nil
+			case ouID + ":ACCOUNT":
+				return nil, errors.New("late traversal failure")
+			default:
+				return nil, errors.New("unexpected children lookup")
+			}
+		},
+		describeAccountFn: func(context.Context, *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+			return &organizations.DescribeAccountOutput{Account: &types.Account{
+				Id: aws.String(managementAccount), Name: aws.String("Management"),
+			}}, nil
+		},
+		describeOrganizationalUnit: func(context.Context, *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error) {
+			return &organizations.DescribeOrganizationalUnitOutput{OrganizationalUnit: &types.OrganizationalUnit{
+				Id: aws.String(ouID), Name: aws.String("Production"),
+			}}, nil
+		},
+	}
+
+	var output bytes.Buffer
+	err := displayOrganizationTree(context.Background(), &output, client, "all", rootID, "", managementAccount, text)
+	if err == nil || !strings.Contains(err.Error(), "late traversal failure") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("stdout contains partial hierarchy data: %q", output.String())
+	}
+}
+
+func TestDisplayOrganizationTreeTextDoesNotWriteAccountPathOnLateTraversalFailure(t *testing.T) {
+	t.Parallel()
+
+	const (
+		rootID    = "r-root"
+		ouID      = "ou-root-12345678"
+		accountID = "123456789012"
+	)
+	client := &fakeOrganizationsClient{
+		describeAccountFn: func(context.Context, *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+			return &organizations.DescribeAccountOutput{Account: &types.Account{
+				Id: aws.String(accountID), Name: aws.String("Application"),
+			}}, nil
+		},
+		describeOrganizationalUnit: func(context.Context, *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error) {
+			return &organizations.DescribeOrganizationalUnitOutput{OrganizationalUnit: &types.OrganizationalUnit{
+				Id: aws.String(ouID), Name: aws.String("Production"),
+			}}, nil
+		},
+		listParentsFn: func(_ context.Context, input *organizations.ListParentsInput) (*organizations.ListParentsOutput, error) {
+			switch aws.ToString(input.ChildId) {
+			case accountID:
+				return &organizations.ListParentsOutput{Parents: []types.Parent{{
+					Id: aws.String(ouID), Type: types.ParentTypeOrganizationalUnit,
+				}}}, nil
+			case ouID:
+				return &organizations.ListParentsOutput{Parents: []types.Parent{{
+					Id: aws.String(rootID), Type: types.ParentTypeRoot,
+				}}}, nil
+			default:
+				return nil, errors.New("unexpected parent lookup")
+			}
+		},
+		listPoliciesForTargetFn: func(context.Context, *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			return nil, errors.New("late traversal failure")
+		},
+	}
+
+	var output bytes.Buffer
+	err := displayOrganizationTree(context.Background(), &output, client, accountID, rootID, "", "999999999999", text)
+	if err == nil || !strings.Contains(err.Error(), "late traversal failure") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("stdout contains partial hierarchy data: %q", output.String())
+	}
+}
+
+func TestDisplayOrganizationTreeTextReturnsFinalWriteError(t *testing.T) {
+	t.Parallel()
+
+	err := displayOrganizationTree(
+		context.Background(),
+		&failingWriter{err: io.ErrClosedPipe},
+		&fakeOrganizationsClient{},
+		"all",
+		"r-root",
+		"",
+		"111111111111",
+		text,
+	)
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("got error %v, want closed pipe", err)
 	}
 }
 
