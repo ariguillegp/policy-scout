@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -220,10 +221,14 @@ func TestOutputFormatSupportsTextAndJSONOnly(t *testing.T) {
 	}
 }
 
-func TestOrganizationJSONNodePreservesSCPsFieldName(t *testing.T) {
+func TestOrganizationJSONViewPreservesSCPsFieldName(t *testing.T) {
 	t.Parallel()
 
-	data, err := encodingjson.Marshal(organizationNode{Type: "account", ID: "123456789012", SCPs: []string{"DenyS3"}})
+	data, err := encodingjson.Marshal(newOrganizationJSONNode(organizationNode{
+		Type: "account",
+		ID:   "123456789012",
+		SCPs: []string{"DenyS3"},
+	}))
 	if err != nil {
 		t.Fatalf("encode account: %v", err)
 	}
@@ -236,7 +241,7 @@ func TestOrganizationJSONNodePreservesSCPsFieldName(t *testing.T) {
 	}
 }
 
-func TestOrganizationJSONNodeSchemaPreservesLegacySCPsAndAddsAttachments(t *testing.T) {
+func TestOrganizationJSONViewPreservesLegacySCPsAndAddsAttachments(t *testing.T) {
 	t.Parallel()
 
 	node := organizationNode{
@@ -256,29 +261,180 @@ func TestOrganizationJSONNodeSchemaPreservesLegacySCPsAndAddsAttachments(t *test
 		}},
 	}
 
-	encoded, err := encodingjson.Marshal(node)
+	encoded, err := encodingjson.Marshal(newOrganizationJSONNode(node))
 	if err != nil {
 		t.Fatalf("encode account node: %v", err)
 	}
-	want := `{"type":"account","id":"123456789012","name":"Application","scps":["DenyS3"],` +
+	want := `{"type":"account","id":"123456789012","name":"Application","management_account":false,"scps":["DenyS3"],` +
 		`"scp_attachments":[{"policy_id":"p-deny0001","policy_name":"DenyS3",` +
 		`"attached_to":{"type":"account","id":"123456789012","name":"Application"},"inherited":false}]}`
 	if string(encoded) != want {
 		t.Fatalf("got JSON\n%s\nwant\n%s", encoded, want)
 	}
 
-	managementNode, err := encodingjson.Marshal(organizationNode{
+	managementNode, err := encodingjson.Marshal(newOrganizationJSONNode(organizationNode{
 		Type:              "account",
 		ID:                "111111111111",
 		Name:              "Management",
 		ManagementAccount: true,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("encode management account node: %v", err)
 	}
 	managementWant := `{"type":"account","id":"111111111111","name":"Management","management_account":true}`
 	if string(managementNode) != managementWant {
 		t.Fatalf("got management JSON\n%s\nwant\n%s", managementNode, managementWant)
+	}
+}
+
+func TestOrganizationJSONSelectionMetadataIsExplicitAndPrettyPrinted(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		selection organizationSelection
+		want      string
+	}{
+		"all": {
+			selection: organizationSelection{Type: allSelectionType},
+			want: `{
+  "schema_version": "1",
+  "selection": {
+    "type": "all"
+  },
+  "type": "root",
+  "id": "r-root",
+  "name": "Organization Root",
+  "children": []
+}
+`,
+		},
+		"account": {
+			selection: organizationSelection{Type: accountEntityType, TargetID: "123456789012"},
+			want: `{
+  "schema_version": "1",
+  "selection": {
+    "type": "account",
+    "target_id": "123456789012"
+  },
+  "type": "root",
+  "id": "r-root",
+  "name": "Organization Root",
+  "children": []
+}
+`,
+		},
+		"organizational unit": {
+			selection: organizationSelection{Type: organizationalUnitEntityType, TargetID: "ou-root-12345678"},
+			want: `{
+  "schema_version": "1",
+  "selection": {
+    "type": "organizational_unit",
+    "target_id": "ou-root-12345678"
+  },
+  "type": "root",
+  "id": "r-root",
+  "name": "Organization Root",
+  "children": []
+}
+`,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := renderOrganizationTreeJSON(organizationNode{
+				SchemaVersion: organizationJSONSchemaVersion,
+				Selection:     test.selection,
+				Type:          rootEntityType,
+				ID:            "r-root",
+				Name:          "Organization Root",
+			})
+			if err != nil {
+				t.Fatalf("render organization JSON: %v", err)
+			}
+			if string(output) != test.want {
+				t.Fatalf("got JSON\n%s\nwant\n%s", output, test.want)
+			}
+		})
+	}
+}
+
+func TestOrganizationJSONViewUsesTypeSpecificFieldPresence(t *testing.T) {
+	t.Parallel()
+
+	root := organizationNode{
+		SchemaVersion: organizationJSONSchemaVersion,
+		Selection:     organizationSelection{Type: allSelectionType},
+		Type:          rootEntityType,
+		ID:            "r-root",
+		Children: []organizationNode{
+			{Type: organizationalUnitEntityType, ID: "ou-root-12345678", Name: "Empty OU"},
+			{Type: accountEntityType, ID: "222222222222", Name: "Empty member"},
+			{Type: accountEntityType, ID: "111111111111", Name: "Management", ManagementAccount: true},
+		},
+	}
+	encoded, err := renderOrganizationTreeJSON(root)
+	if err != nil {
+		t.Fatalf("render organization JSON: %v", err)
+	}
+
+	var document struct {
+		Children []map[string]encodingjson.RawMessage `json:"children"`
+	}
+	if err := encodingjson.Unmarshal(encoded, &document); err != nil {
+		t.Fatalf("decode organization JSON: %v", err)
+	}
+	var rootFields map[string]encodingjson.RawMessage
+	if err := encodingjson.Unmarshal(encoded, &rootFields); err != nil {
+		t.Fatalf("decode root fields: %v", err)
+	}
+	if len(document.Children) != 3 {
+		t.Fatalf("children = %d, want 3", len(document.Children))
+	}
+
+	assertFields := func(nodeName string, fields map[string]encodingjson.RawMessage, want ...string) {
+		t.Helper()
+		got := make([]string, 0, len(fields))
+		for field := range fields {
+			got = append(got, field)
+		}
+		sort.Strings(got)
+		sort.Strings(want)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s fields = %v, want %v; JSON: %v", nodeName, got, want, fields)
+		}
+	}
+
+	assertFields(
+		"root",
+		rootFields,
+		"schema_version", "selection", "type", "id", "children",
+	)
+	assertFields(
+		"organizational unit",
+		document.Children[0],
+		"type", "id", "name", "scps", "scp_attachments", "children",
+	)
+	assertFields(
+		"member account",
+		document.Children[1],
+		"type", "id", "name", "management_account", "scps", "scp_attachments",
+	)
+	assertFields(
+		"management account",
+		document.Children[2],
+		"type", "id", "name", "management_account",
+	)
+	if string(document.Children[0]["scps"]) != "[]" ||
+		string(document.Children[0]["scp_attachments"]) != "[]" ||
+		string(document.Children[0]["children"]) != "[]" ||
+		string(document.Children[1]["management_account"]) != "false" ||
+		string(document.Children[1]["scps"]) != "[]" ||
+		string(document.Children[1]["scp_attachments"]) != "[]" ||
+		string(document.Children[2]["management_account"]) != "true" {
+		t.Fatalf("unexpected type-specific values: %s", encoded)
 	}
 }
 
@@ -1316,8 +1472,12 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
 
 	wantJSON := `{
   "schema_version": "1",
+  "selection": {
+    "type": "all"
+  },
   "type": "root",
   "id": "r-root",
+  "name": "Root",
   "children": [
     {
       "type": "account",
@@ -1328,44 +1488,67 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
     {
       "type": "account",
       "id": "222222222222",
-      "name": "Account 222222222222"
+      "name": "Account 222222222222",
+      "management_account": false,
+      "scps": [],
+      "scp_attachments": []
     },
     {
       "type": "account",
       "id": "333333333333",
-      "name": "Account 333333333333"
+      "name": "Account 333333333333",
+      "management_account": false,
+      "scps": [],
+      "scp_attachments": []
     },
     {
       "type": "organizational_unit",
       "id": "ou-root-aaaa1111",
       "name": "OU ou-root-aaaa1111",
+      "scps": [],
+      "scp_attachments": [],
       "children": [
         {
           "type": "account",
           "id": "444444444444",
-          "name": "Account 444444444444"
+          "name": "Account 444444444444",
+          "management_account": false,
+          "scps": [],
+          "scp_attachments": []
         },
         {
           "type": "account",
           "id": "555555555555",
-          "name": "Account 555555555555"
+          "name": "Account 555555555555",
+          "management_account": false,
+          "scps": [],
+          "scp_attachments": []
         },
         {
           "type": "organizational_unit",
           "id": "ou-root-cccc3333",
-          "name": "OU ou-root-cccc3333"
+          "name": "OU ou-root-cccc3333",
+          "scps": [],
+          "scp_attachments": [],
+          "children": []
         },
         {
           "type": "organizational_unit",
           "id": "ou-root-dddd4444",
-          "name": "OU ou-root-dddd4444"
+          "name": "OU ou-root-dddd4444",
+          "scps": [],
+          "scp_attachments": [],
+          "children": []
         }
       ]
     },
     {
       "type": "organizational_unit",
       "id": "ou-root-bbbb2222",
-      "name": "OU ou-root-bbbb2222"
+      "name": "OU ou-root-bbbb2222",
+      "scps": [],
+      "scp_attachments": [],
+      "children": []
     }
   ]
 }
@@ -1616,6 +1799,12 @@ func TestBuildOrganizationTreeAccountPathWalksUpwardAndListsInheritedPolicies(t 
 	if err != nil {
 		t.Fatalf("build path: %v", err)
 	}
+	if tree.Selection != (organizationSelection{Type: accountEntityType, TargetID: accountID}) {
+		t.Fatalf("account selection = %+v", tree.Selection)
+	}
+	if tree.Name != "Organization Root" {
+		t.Fatalf("root name = %q, want %q", tree.Name, "Organization Root")
+	}
 	if listChildrenCalls != 0 {
 		t.Fatalf("list children called %d times", listChildrenCalls)
 	}
@@ -1680,6 +1869,12 @@ func TestBuildOrganizationTreeOrganizationalUnitPathWalksUpwardAndListsInherited
 	if err != nil {
 		t.Fatalf("build OU path: %v", err)
 	}
+	if tree.Selection != (organizationSelection{Type: organizationalUnitEntityType, TargetID: targetID}) {
+		t.Fatalf("organizational-unit selection = %+v", tree.Selection)
+	}
+	if tree.Name != "Organization Root" {
+		t.Fatalf("root name = %q, want %q", tree.Name, "Organization Root")
+	}
 	if listChildrenCalls != 0 {
 		t.Fatalf("list children called %d times", listChildrenCalls)
 	}
@@ -1740,6 +1935,18 @@ func TestInspectOrganizationalUnitDirectlyUnderRootSkipsDescribeOrganization(t *
 	var tree organizationNode
 	if err := encodingjson.Unmarshal(output.Bytes(), &tree); err != nil {
 		t.Fatalf("decode output: %v", err)
+	}
+	var metadata struct {
+		Selection organizationJSONSelection `json:"selection"`
+	}
+	if err := encodingjson.Unmarshal(output.Bytes(), &metadata); err != nil {
+		t.Fatalf("decode selection metadata: %v", err)
+	}
+	if metadata.Selection != (organizationJSONSelection{Type: organizationalUnitEntityType, TargetID: targetID}) {
+		t.Fatalf("selection metadata = %+v", metadata.Selection)
+	}
+	if tree.Name != "Organization Root" {
+		t.Fatalf("root name = %q, want %q", tree.Name, "Organization Root")
 	}
 	if len(tree.Children) != 1 || tree.Children[0].ID != targetID || len(tree.Children[0].Children) != 0 {
 		t.Fatalf("unexpected direct-child OU path: %+v", tree)
@@ -2613,21 +2820,31 @@ func TestDisplayOrganizationTreeTextDoesNotWriteAccountPathOnLateTraversalFailur
 	}
 }
 
-func TestDisplayOrganizationTreeTextReturnsFinalWriteError(t *testing.T) {
+func TestDisplayOrganizationTreeReturnsFinalWriteError(t *testing.T) {
 	t.Parallel()
 
-	err := displayOrganizationTree(
-		context.Background(),
-		&failingWriter{err: io.ErrClosedPipe},
-		&fakeOrganizationsClient{},
-		"all",
-		"r-root",
-		"",
-		"111111111111",
-		text,
-	)
-	if !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("got error %v, want closed pipe", err)
+	for _, outputFormat := range []outputFormat{text, json} {
+		outputFormat := outputFormat
+		t.Run(string(outputFormat), func(t *testing.T) {
+			t.Parallel()
+
+			err := displayOrganizationTree(
+				context.Background(),
+				&failingWriter{err: io.ErrClosedPipe},
+				&fakeOrganizationsClient{},
+				"all",
+				"r-root",
+				"",
+				"111111111111",
+				outputFormat,
+			)
+			if !errors.Is(err, io.ErrClosedPipe) {
+				t.Fatalf("got error %v, want closed pipe", err)
+			}
+			if outputFormat == json && !strings.Contains(err.Error(), "encode organization as JSON") {
+				t.Fatalf("JSON write error lacks operation context: %v", err)
+			}
+		})
 	}
 }
 
@@ -2690,7 +2907,13 @@ func TestDisplayOrganizationTreeJSONBuildsAccountPath(t *testing.T) {
 	); err != nil {
 		t.Fatalf("display JSON: %v", err)
 	}
-	if !strings.HasPrefix(output.String(), "{\n  \"schema_version\": \"1\",") || !strings.HasSuffix(output.String(), "}\n") {
+	wantPrefix := "{\n" +
+		"  \"schema_version\": \"1\",\n" +
+		"  \"selection\": {\n" +
+		"    \"type\": \"account\",\n" +
+		"    \"target_id\": \"123456789012\"\n" +
+		"  },\n"
+	if !strings.HasPrefix(output.String(), wantPrefix) || !strings.HasSuffix(output.String(), "}\n") {
 		t.Fatalf("JSON indentation or document framing changed:\n%s", output.String())
 	}
 
@@ -2698,7 +2921,7 @@ func TestDisplayOrganizationTreeJSONBuildsAccountPath(t *testing.T) {
 	if err := encodingjson.Unmarshal(output.Bytes(), &result); err != nil {
 		t.Fatalf("decode JSON: %v", err)
 	}
-	if result.Type != "root" || result.ID != rootID || len(result.Children) != 1 {
+	if result.Type != "root" || result.ID != rootID || result.Name != "Organization Root" || len(result.Children) != 1 {
 		t.Fatalf("unexpected root: %+v", result)
 	}
 	ou := result.Children[0]

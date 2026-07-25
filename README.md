@@ -214,31 +214,52 @@ Human-readable stderr remains the default. Retry transient failures with backoff
 
 ## Output
 
-JSON output is a tree rooted at the AWS organization root. Nodes use these fields:
+JSON output is an unwrapped tree rooted at the AWS organization root. The root's required `selection` object identifies the request that produced the detached document:
 
-- `schema_version`: the organization JSON compatibility version; present on the root node.
-- `type`: `root`, `organizational_unit`, or `account`.
-- `id`: the AWS entity ID.
-- `name`: the entity name, when applicable.
-- `management_account`: `true` for the management account.
-- `scps`: sorted, de-duplicated names from SCP summaries directly attached to an OU/member account or inherited from a root/OU in its ancestor path. This compatibility field is intentionally name-only and does not represent evaluated effective permissions; use `scp_attachments` when IDs or attachment locations matter.
-- `scp_attachments`: direct and inherited SCP attachment provenance localized on every OU and member account. Each item contains:
+- All: `{"selection":{"type":"all"}}`
+- Account: `{"selection":{"type":"account","target_id":"339712974046"}}`
+- Organizational unit: `{"selection":{"type":"organizational_unit","target_id":"ou-cww9-x2atbcle"}}`
+
+`selection.type` is exactly `all`, `account`, or `organizational_unit`. `selection.target_id` is required for account and organizational-unit selections and omitted for `all`.
+
+Field presence is type-specific:
+
+| Field | Root | Organizational unit | Member account | Management account |
+| --- | --- | --- | --- | --- |
+| `schema_version` | required (`"1"`) | omitted | omitted | omitted |
+| `selection` | required | omitted | omitted | omitted |
+| `type` | required (`root`) | required (`organizational_unit`) | required (`account`) | required (`account`) |
+| `id` | required | required | required | required |
+| `name` | present when AWS returns it | required | required | required |
+| `management_account` | omitted | omitted | required (`false`) | required (`true`) |
+| `scps` | omitted | required array | required array | omitted |
+| `scp_attachments` | omitted | required array | required array | omitted |
+| `children` | required array | required array | omitted | omitted |
+
+Applicable arrays are present as `[]` when empty. `children` contains only the selected account/OU path unless `selection.type` is `all`; selecting an OU does not expand its descendants. An empty `children` array on the selected OU therefore means its descendants were not expanded, not that the OU has no children; check the root `selection.type` before interpreting it.
+
+- `scps` is the legacy compatibility field: sorted, de-duplicated names from SCP summaries directly attached to an OU/member account or inherited from a root/OU in its ancestor path. It is intentionally name-only and does not represent evaluated effective permissions; use `scp_attachments` when IDs or attachment locations matter.
+- `scp_attachments` is the authoritative direct and inherited SCP attachment provenance localized on every OU and member account. Each item contains:
   - `policy_id` and `policy_name`: the stable policy identity and its display name.
   - `attached_to`: the `type` and `id` of the `root`, `organizational_unit`, or `account` where the policy is attached, plus its `name` when that name is already returned while building the tree.
   - `inherited`: `false` only when the policy is attached directly to the reported OU or account; otherwise `true`.
-- `children`: nested organization nodes.
 
 For full-organization output (`--account-id all`), both JSON and text order children deterministically: accounts come before organizational units under each parent, and each category is sorted by AWS entity ID. This order is independent of AWS response pagination and ordering.
 
 On each OU or account, `scp_attachments` contains one item per unique policy-ID/attachment-target pair along that entity's path. This preserves distinct attachment locations for one policy while removing duplicate API entries, and distinguishes different policy IDs that share a name. Its ordering is deterministic by policy name, policy ID, and then attachment position from root to the reported entity. The `scps` array is sorted and de-duplicated by name, so duplicate names must be disambiguated through `scp_attachments`.
 
-Fields that do not apply or contain no values may be omitted. SCP fields are omitted for the management account because SCPs do not affect its users or roles. Policy Scout lists policy summaries attached to each hierarchy target; it does not retrieve or evaluate policy documents. The successful JSON document is not wrapped in a status envelope.
+For the management account, `management_account` is `true` and both SCP fields are intentionally omitted rather than serialized as empty arrays. Their absence means “not applicable,” not “queried and none found”: SCPs do not restrict users or roles in the management account, so Policy Scout does not collect localized direct or inherited SCP attachments for that node. Policy Scout lists policy summaries attached to other hierarchy targets; it does not retrieve or evaluate policy documents.
 
 ```json
 {
   "schema_version": "1",
+  "selection": {
+    "type": "account",
+    "target_id": "339712974046"
+  },
   "type": "root",
   "id": "r-cww9",
+  "name": "Root",
   "children": [
     {
       "type": "organizational_unit",
@@ -272,6 +293,7 @@ Fields that do not apply or contain no values may be omitted. SCP fields are omi
           "type": "account",
           "id": "339712974046",
           "name": "aws-child1",
+          "management_account": false,
           "scps": ["DenyAccessS3", "DenyRegions", "FullAWSAccess"],
           "scp_attachments": [
             {
@@ -310,6 +332,35 @@ Fields that do not apply or contain no values may be omitted. SCP fields are omi
     }
   ]
 }
+```
+
+Empty applicable collections and the management-account exception have these exact node shapes (shown in an array only for comparison):
+
+```json
+[
+  {
+    "type": "organizational_unit",
+    "id": "ou-cww9-empty123",
+    "name": "Empty OU",
+    "scps": [],
+    "scp_attachments": [],
+    "children": []
+  },
+  {
+    "type": "account",
+    "id": "222222222222",
+    "name": "Empty member",
+    "management_account": false,
+    "scps": [],
+    "scp_attachments": []
+  },
+  {
+    "type": "account",
+    "id": "111111111111",
+    "name": "Management",
+    "management_account": true
+  }
+]
 ```
 
 Text output renders the same hierarchy as a tree:
@@ -457,7 +508,11 @@ The auth status document has no `schema_version` field, and the organization `sc
 
 Release binaries report their release version; binaries built directly with `go build` report `dev`. The organization output's root-level `schema_version` matches `organization_schema_version` above.
 
-Within one schema version, consumers must tolerate additive object fields and should use the `type` field rather than assume every node has identical fields. Removing or renaming fields, changing their types or meanings, or restructuring the document is a breaking change and requires a new `schema_version`. The successful organization document remains an unwrapped root node.
+Within one schema version, consumers must tolerate additive object fields and should use the `type` field rather than assume every node has identical fields. Schema v1 therefore includes the additive root `selection` metadata, root `name` when available, explicit account `management_account` values, and consistently present applicable arrays. Removing or renaming fields, changing their types or meanings, or restructuring the document is a breaking change and requires a new `schema_version`. The successful organization document remains an unwrapped root node.
+
+Organization JSON remains two-space indented and newline-terminated because existing byte-level compatibility tests protect that representation; switching it to compact encoding is deferred. Consumers should parse JSON rather than use whitespace as a data delimiter.
+
+Policy Scout does not currently publish a formal JSON Schema for organization schema v1. A strict artifact that requires fields added during the lifetime of v1 would reject valid output from older v1 binaries, while making those current field-presence guarantees optional would be misleading. The type-specific presence table above is the current producer contract; a formal artifact should accompany a future schema version with an explicit artifact-versioning policy.
 
 ## Tooling
 

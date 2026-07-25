@@ -45,6 +45,7 @@ const (
 	rootEntityType               = "root"
 	accountEntityType            = "account"
 	organizationalUnitEntityType = "organizational_unit"
+	allSelectionType             = "all"
 )
 
 // Defining a custom enum to restrict output format values.
@@ -629,16 +630,42 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
+type organizationSelection struct {
+	Type     string
+	TargetID string
+}
+
 // organizationNode is the canonical hierarchy produced by AWS discovery and consumed by every renderer.
 type organizationNode struct {
-	SchemaVersion     string             `json:"schema_version,omitempty"`
-	Type              string             `json:"type"`
-	ID                string             `json:"id"`
-	Name              string             `json:"name,omitempty"`
-	ManagementAccount bool               `json:"management_account,omitempty"`
-	SCPs              []string           `json:"scps,omitempty"`
-	SCPAttachments    []scpAttachment    `json:"scp_attachments,omitempty"`
-	Children          []organizationNode `json:"children,omitempty"`
+	SchemaVersion     string                `json:"schema_version,omitempty"`
+	Selection         organizationSelection `json:"-"`
+	Type              string                `json:"type"`
+	ID                string                `json:"id"`
+	Name              string                `json:"name,omitempty"`
+	ManagementAccount bool                  `json:"management_account,omitempty"`
+	SCPs              []string              `json:"scps,omitempty"`
+	SCPAttachments    []scpAttachment       `json:"scp_attachments,omitempty"`
+	Children          []organizationNode    `json:"children,omitempty"`
+}
+
+type organizationJSONSelection struct {
+	Type     string `json:"type"`
+	TargetID string `json:"target_id,omitempty"`
+}
+
+// organizationJSONNode is the type-specific JSON view of the canonical hierarchy.
+// Pointer fields distinguish applicable empty collections and false values from
+// fields that are intentionally inapplicable to a node type.
+type organizationJSONNode struct {
+	SchemaVersion     string                     `json:"schema_version,omitempty"`
+	Selection         *organizationJSONSelection `json:"selection,omitempty"`
+	Type              string                     `json:"type"`
+	ID                string                     `json:"id"`
+	Name              string                     `json:"name,omitempty"`
+	ManagementAccount *bool                      `json:"management_account,omitempty"`
+	SCPs              *[]string                  `json:"scps,omitempty"`
+	SCPAttachments    *[]scpAttachment           `json:"scp_attachments,omitempty"`
+	Children          *[]organizationJSONNode    `json:"children,omitempty"`
 }
 
 type organizationCache struct {
@@ -755,12 +782,24 @@ func buildOrganizationTree(
 	client organizationsClient,
 	targetID, rootID, rootName, managementAccountID string,
 ) (organizationNode, error) {
-	root := organizationNode{SchemaVersion: organizationJSONSchemaVersion, Type: rootEntityType, ID: rootID}
+	selection := organizationSelection{Type: accountEntityType, TargetID: targetID}
+	if strings.EqualFold(targetID, allSelectionType) {
+		selection = organizationSelection{Type: allSelectionType}
+	} else if strings.HasPrefix(targetID, "ou-") {
+		selection.Type = organizationalUnitEntityType
+	}
+	root := organizationNode{
+		SchemaVersion: organizationJSONSchemaVersion,
+		Selection:     selection,
+		Type:          rootEntityType,
+		ID:            rootID,
+		Name:          rootName,
+	}
 	cache := newOrganizationCache(rootID, rootName)
 
 	var err error
-	switch {
-	case strings.EqualFold(targetID, "all"):
+	switch selection.Type {
+	case allSelectionType:
 		root.Children, err = buildOrganizationChildren(
 			ctx,
 			client,
@@ -771,9 +810,9 @@ func buildOrganizationTree(
 			map[string]bool{},
 			cache,
 		)
-	case strings.HasPrefix(targetID, "ou-"):
+	case organizationalUnitEntityType:
 		root.Children, err = buildOrganizationalUnitPath(ctx, client, targetID, rootID, cache)
-	default:
+	case accountEntityType:
 		root.Children, err = buildAccountPath(ctx, client, targetID, rootID, managementAccountID, cache)
 	}
 	if err != nil {
@@ -1132,11 +1171,64 @@ func writeOrganizationTree(writer io.Writer, root organizationNode, outputFormat
 }
 
 func renderOrganizationTreeJSON(root organizationNode) ([]byte, error) {
-	encoded, err := encodingjson.MarshalIndent(root, "", "  ")
+	encoded, err := encodingjson.MarshalIndent(newOrganizationJSONNode(root), "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode organization as JSON: %w", err)
 	}
 	return append(encoded, '\n'), nil
+}
+
+func newOrganizationJSONNode(node organizationNode) organizationJSONNode {
+	view := organizationJSONNode{
+		SchemaVersion: node.SchemaVersion,
+		Type:          node.Type,
+		ID:            node.ID,
+		Name:          node.Name,
+	}
+
+	switch node.Type {
+	case rootEntityType:
+		selection := organizationJSONSelection{
+			Type:     node.Selection.Type,
+			TargetID: node.Selection.TargetID,
+		}
+		children := newOrganizationJSONChildren(node.Children)
+		view.Selection = &selection
+		view.Children = &children
+	case organizationalUnitEntityType:
+		scps := nonNilSlice(node.SCPs)
+		attachments := nonNilSlice(node.SCPAttachments)
+		children := newOrganizationJSONChildren(node.Children)
+		view.SCPs = &scps
+		view.SCPAttachments = &attachments
+		view.Children = &children
+	case accountEntityType:
+		managementAccount := node.ManagementAccount
+		view.ManagementAccount = &managementAccount
+		if !managementAccount {
+			scps := nonNilSlice(node.SCPs)
+			attachments := nonNilSlice(node.SCPAttachments)
+			view.SCPs = &scps
+			view.SCPAttachments = &attachments
+		}
+	}
+
+	return view
+}
+
+func newOrganizationJSONChildren(children []organizationNode) []organizationJSONNode {
+	result := make([]organizationJSONNode, len(children))
+	for index, child := range children {
+		result[index] = newOrganizationJSONNode(child)
+	}
+	return result
+}
+
+func nonNilSlice[T any](values []T) []T {
+	if values == nil {
+		return []T{}
+	}
+	return values
 }
 
 func renderOrganizationTreeText(root organizationNode) string {
