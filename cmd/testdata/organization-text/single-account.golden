@@ -1,0 +1,13 @@
+Organization path to Account Application [123456789012]
+Root Organization Root [r-root]
+`-- OU Production [ou-root-12345678]
+    |-- SCP FullAWSAccess [p-full0001] — inherited from Root Organization Root [r-root]
+    |-- SCP FullAWSAccess [p-full0001] — direct
+    |-- SCP SameName [p-first001] — inherited from Root Organization Root [r-root]
+    |-- SCP SameName [p-second01] — direct
+    `-- Account Application [123456789012]
+        |-- SCP DenyS3 [p-deny0001] — direct
+        |-- SCP FullAWSAccess [p-full0001] — inherited from Root Organization Root [r-root]
+        |-- SCP FullAWSAccess [p-full0001] — inherited from OU Production [ou-root-12345678]
+        |-- SCP SameName [p-first001] — inherited from Root Organization Root [r-root]
+        `-- SCP SameName [p-second01] — inherited from OU Production [ou-root-12345678]

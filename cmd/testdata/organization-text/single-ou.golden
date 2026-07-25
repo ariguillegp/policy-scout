@@ -1,0 +1,9 @@
+Organization path to OU Workloads [ou-root-22222222]
+Root Organization Root [r-root]
+`-- OU Production [ou-root-11111111]
+    |-- SCP ParentPolicy [p-parent01] — direct
+    |-- SCP RootPolicy [p-root0001] — inherited from Root Organization Root [r-root]
+    `-- OU Workloads [ou-root-22222222]
+        |-- SCP ParentPolicy [p-parent01] — inherited from OU Production [ou-root-11111111]
+        |-- SCP RootPolicy [p-root0001] — inherited from Root Organization Root [r-root]
+        `-- SCP TargetPolicy [p-target01] — direct

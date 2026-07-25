@@ -214,6 +214,8 @@ Human-readable stderr remains the default. Retry transient failures with backoff
 
 ## Output
 
+Use JSON output for automation. Text output is intentionally optimized for people scanning a terminal and is not a schema-stable interface; its wording and layout may improve between releases. Both formats preserve the same hierarchy, policy identities, attachment sources, and deterministic entity/attachment ordering.
+
 JSON output is an unwrapped tree rooted at the AWS organization root. The root's required `selection` object identifies the request that produced the detached document:
 
 - All: `{"selection":{"type":"all"}}`
@@ -363,19 +365,20 @@ Empty applicable collections and the management-account exception have these exa
 ]
 ```
 
-Text output renders the same hierarchy as a tree:
+Text output starts by identifying whether it contains the full organization or the path to one selected account or OU. Portable ASCII tree connectors distinguish continuing siblings (`|--`) from final children (`` `-- ``), and continuation columns remain visible through nested entities. Detailed SCP lines replace redundant policy-name summaries: `direct` means attached to the containing entity, while inherited lines name the source root or OU. An applicable entity without attachments has an explicit `SCPs: none` child line. The management-account warning is also a child line because SCPs do not affect that account's users or roles.
 
 ```text
-|-- Root: [r-cww9]
-    |-- OU: Prod [ou-cww9-36h7ub42] (SCP summary names from OU/ancestor attachments: FullAWSAccess)
-        |-- SCP: FullAWSAccess [p-FullAWSAccess] (Attached to: root Root [r-cww9]; Inherited: true)
-        |-- OU: Finance [ou-cww9-x2atbcle] (SCP summary names from OU/ancestor attachments: DenyRegions, FullAWSAccess)
-            |-- SCP: DenyRegions [p-e5f6g7h8] (Attached to: organizational_unit Finance [ou-cww9-x2atbcle]; Inherited: false)
-            |-- SCP: FullAWSAccess [p-FullAWSAccess] (Attached to: root Root [r-cww9]; Inherited: true)
-            |-- Account: aws-child1 [339712974046] (SCP summary names from account/ancestor attachments: DenyAccessS3, DenyRegions, FullAWSAccess)
-                |-- SCP: DenyAccessS3 [p-a1b2c3d4] (Attached to: account aws-child1 [339712974046]; Inherited: false)
-                |-- SCP: DenyRegions [p-e5f6g7h8] (Attached to: organizational_unit Finance [ou-cww9-x2atbcle]; Inherited: true)
-                |-- SCP: FullAWSAccess [p-FullAWSAccess] (Attached to: root Root [r-cww9]; Inherited: true)
+Organization path to Account aws-child1 [339712974046]
+Root [r-cww9]
+`-- OU Prod [ou-cww9-36h7ub42]
+    |-- SCP FullAWSAccess [p-FullAWSAccess] — inherited from Root [r-cww9]
+    `-- OU Finance [ou-cww9-x2atbcle]
+        |-- SCP DenyRegions [p-e5f6g7h8] — direct
+        |-- SCP FullAWSAccess [p-FullAWSAccess] — inherited from Root [r-cww9]
+        `-- Account aws-child1 [339712974046]
+            |-- SCP DenyAccessS3 [p-a1b2c3d4] — direct
+            |-- SCP DenyRegions [p-e5f6g7h8] — inherited from OU Finance [ou-cww9-x2atbcle]
+            `-- SCP FullAWSAccess [p-FullAWSAccess] — inherited from Root [r-cww9]
 ```
 
 ## AWS auth status JSON compatibility

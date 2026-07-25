@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"embed"
 	encodingjson "encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +28,18 @@ import (
 	"github.com/aws/smithy-go"
 	"github.com/spf13/cobra"
 )
+
+//go:embed testdata/organization-text/*.golden
+var organizationTextGoldens embed.FS
+
+func organizationTextGolden(t *testing.T, name string) string {
+	t.Helper()
+	content, err := organizationTextGoldens.ReadFile("testdata/organization-text/" + name + ".golden")
+	if err != nil {
+		t.Fatalf("read organization text golden %q: %v", name, err)
+	}
+	return string(content)
+}
 
 type fakeSTSClient struct {
 	getCallerIdentityFn func(context.Context, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
@@ -435,6 +448,67 @@ func TestOrganizationJSONViewUsesTypeSpecificFieldPresence(t *testing.T) {
 		string(document.Children[1]["scp_attachments"]) != "[]" ||
 		string(document.Children[2]["management_account"]) != "true" {
 		t.Fatalf("unexpected type-specific values: %s", encoded)
+	}
+}
+
+func TestOrganizationTextRenderingDoesNotMutateJSONDocument(t *testing.T) {
+	t.Parallel()
+
+	tree := organizationNode{
+		SchemaVersion: organizationJSONSchemaVersion,
+		Selection:     organizationSelection{Type: accountEntityType, TargetID: "123456789012"},
+		Type:          rootEntityType,
+		ID:            "r-root",
+		Name:          "Organization Root",
+		Children: []organizationNode{{
+			Type: accountEntityType,
+			ID:   "123456789012",
+			Name: "Application",
+			SCPs: []string{"DenyRegions"},
+			SCPAttachments: []scpAttachment{{
+				PolicyID:   "p-regions01",
+				PolicyName: "DenyRegions",
+				AttachedTo: scpAttachmentTarget{
+					Type: accountEntityType,
+					ID:   "123456789012",
+					Name: "Application",
+				},
+			}},
+		}},
+	}
+	want, err := renderOrganizationTreeJSON(tree)
+	if err != nil {
+		t.Fatalf("render JSON baseline: %v", err)
+	}
+
+	beforeText := append([]byte(nil), want...)
+	_ = renderOrganizationTreeText(tree)
+	afterText, err := renderOrganizationTreeJSON(tree)
+	if err != nil {
+		t.Fatalf("render JSON after text: %v", err)
+	}
+	if !bytes.Equal(afterText, beforeText) {
+		t.Fatalf("text rendering mutated JSON output:\nbefore:\n%s\nafter:\n%s", beforeText, afterText)
+	}
+}
+
+func TestAttachmentTargetTextUsesHumanEntityTypesAndPreservesNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		target scpAttachmentTarget
+		want   string
+	}{
+		{target: scpAttachmentTarget{Type: rootEntityType, ID: "r-root", Name: "Root"}, want: "Root [r-root]"},
+		{target: scpAttachmentTarget{Type: rootEntityType, ID: "r-root", Name: "Organization Root"}, want: "Root Organization Root [r-root]"},
+		{target: scpAttachmentTarget{Type: organizationalUnitEntityType, ID: "ou-root-12345678", Name: "Finance"}, want: "OU Finance [ou-root-12345678]"},
+		{target: scpAttachmentTarget{Type: organizationalUnitEntityType, ID: "ou-root-87654321", Name: "OU"}, want: "OU OU [ou-root-87654321]"},
+		{target: scpAttachmentTarget{Type: accountEntityType, ID: "123456789012", Name: "Account"}, want: "Account Account [123456789012]"},
+	}
+	for _, test := range tests {
+		if got := attachmentTargetText(test.target); got != test.want {
+			t.Errorf("attachment target %+v rendered as %q, want %q", test.target, got, test.want)
+		}
 	}
 }
 
@@ -1456,12 +1530,25 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
 			},
 			describeAccountFn: func(_ context.Context, input *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
 				id := aws.ToString(input.AccountId)
-				return &organizations.DescribeAccountOutput{Account: &types.Account{Id: input.AccountId, Name: aws.String("Account " + id)}}, nil
+				name := map[string]string{
+					"111111111111": "Management",
+					"222222222222": "Audit",
+					"333333333333": "Shared Services",
+					"444444444444": "Payments",
+					"555555555555": "Reporting",
+				}[id]
+				return &organizations.DescribeAccountOutput{Account: &types.Account{Id: input.AccountId, Name: aws.String(name)}}, nil
 			},
 			describeOrganizationalUnit: func(_ context.Context, input *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error) {
 				id := aws.ToString(input.OrganizationalUnitId)
+				name := map[string]string{
+					"ou-root-aaaa1111": "Finance",
+					"ou-root-bbbb2222": "Security",
+					"ou-root-cccc3333": "Payroll",
+					"ou-root-dddd4444": "Tax",
+				}[id]
 				return &organizations.DescribeOrganizationalUnitOutput{OrganizationalUnit: &types.OrganizationalUnit{
-					Id: input.OrganizationalUnitId, Name: aws.String("OU " + id),
+					Id: input.OrganizationalUnitId, Name: aws.String(name),
 				}}, nil
 			},
 			listPoliciesForTargetFn: func(context.Context, *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
@@ -1482,13 +1569,13 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
     {
       "type": "account",
       "id": "111111111111",
-      "name": "Account 111111111111",
+      "name": "Management",
       "management_account": true
     },
     {
       "type": "account",
       "id": "222222222222",
-      "name": "Account 222222222222",
+      "name": "Audit",
       "management_account": false,
       "scps": [],
       "scp_attachments": []
@@ -1496,7 +1583,7 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
     {
       "type": "account",
       "id": "333333333333",
-      "name": "Account 333333333333",
+      "name": "Shared Services",
       "management_account": false,
       "scps": [],
       "scp_attachments": []
@@ -1504,14 +1591,14 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
     {
       "type": "organizational_unit",
       "id": "ou-root-aaaa1111",
-      "name": "OU ou-root-aaaa1111",
+      "name": "Finance",
       "scps": [],
       "scp_attachments": [],
       "children": [
         {
           "type": "account",
           "id": "444444444444",
-          "name": "Account 444444444444",
+          "name": "Payments",
           "management_account": false,
           "scps": [],
           "scp_attachments": []
@@ -1519,7 +1606,7 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
         {
           "type": "account",
           "id": "555555555555",
-          "name": "Account 555555555555",
+          "name": "Reporting",
           "management_account": false,
           "scps": [],
           "scp_attachments": []
@@ -1527,7 +1614,7 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
         {
           "type": "organizational_unit",
           "id": "ou-root-cccc3333",
-          "name": "OU ou-root-cccc3333",
+          "name": "Payroll",
           "scps": [],
           "scp_attachments": [],
           "children": []
@@ -1535,7 +1622,7 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
         {
           "type": "organizational_unit",
           "id": "ou-root-dddd4444",
-          "name": "OU ou-root-dddd4444",
+          "name": "Tax",
           "scps": [],
           "scp_attachments": [],
           "children": []
@@ -1545,7 +1632,7 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
     {
       "type": "organizational_unit",
       "id": "ou-root-bbbb2222",
-      "name": "OU ou-root-bbbb2222",
+      "name": "Security",
       "scps": [],
       "scp_attachments": [],
       "children": []
@@ -1553,16 +1640,7 @@ func TestFullOrganizationOutputIsByteStableAcrossPaginatedChildOrder(t *testing.
   ]
 }
 `
-	wantText := "|-- Root: [r-root]\n" +
-		"    |-- Account: Account 111111111111 (Management Account) [111111111111] (SCPs do not affect management-account users or roles)\n" +
-		"    |-- Account: Account 222222222222 [222222222222] (SCP summary names from account/ancestor attachments: none)\n" +
-		"    |-- Account: Account 333333333333 [333333333333] (SCP summary names from account/ancestor attachments: none)\n" +
-		"    |-- OU: OU ou-root-aaaa1111 [ou-root-aaaa1111] (SCP summary names from OU/ancestor attachments: none)\n" +
-		"        |-- Account: Account 444444444444 [444444444444] (SCP summary names from account/ancestor attachments: none)\n" +
-		"        |-- Account: Account 555555555555 [555555555555] (SCP summary names from account/ancestor attachments: none)\n" +
-		"        |-- OU: OU ou-root-cccc3333 [ou-root-cccc3333] (SCP summary names from OU/ancestor attachments: none)\n" +
-		"        |-- OU: OU ou-root-dddd4444 [ou-root-dddd4444] (SCP summary names from OU/ancestor attachments: none)\n" +
-		"    |-- OU: OU ou-root-bbbb2222 [ou-root-bbbb2222] (SCP summary names from OU/ancestor attachments: none)\n"
+	wantText := organizationTextGolden(t, "full-organization")
 
 	tests := []struct {
 		format outputFormat
@@ -1779,9 +1857,15 @@ func TestBuildOrganizationTreeAccountPathWalksUpwardAndListsInheritedPolicies(t 
 			case accountID:
 				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{{Id: aws.String("p-deny0001"), Name: aws.String("DenyS3"), Type: types.PolicyTypeServiceControlPolicy}}}, nil
 			case ouID:
-				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{{Id: aws.String("p-full0001"), Name: aws.String("FullAWSAccess"), Type: types.PolicyTypeServiceControlPolicy}}}, nil
+				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{
+					{Id: aws.String("p-full0001"), Name: aws.String("FullAWSAccess"), Type: types.PolicyTypeServiceControlPolicy},
+					{Id: aws.String("p-second01"), Name: aws.String("SameName"), Type: types.PolicyTypeServiceControlPolicy},
+				}}, nil
 			case rootID:
-				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{{Id: aws.String("p-full0001"), Name: aws.String("FullAWSAccess"), Type: types.PolicyTypeServiceControlPolicy}}}, nil
+				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{
+					{Id: aws.String("p-full0001"), Name: aws.String("FullAWSAccess"), Type: types.PolicyTypeServiceControlPolicy},
+					{Id: aws.String("p-first001"), Name: aws.String("SameName"), Type: types.PolicyTypeServiceControlPolicy},
+				}}, nil
 			default:
 				return nil, errors.New("unexpected policy lookup")
 			}
@@ -1809,14 +1893,7 @@ func TestBuildOrganizationTreeAccountPathWalksUpwardAndListsInheritedPolicies(t 
 		t.Fatalf("list children called %d times", listChildrenCalls)
 	}
 	output := renderOrganizationTreeText(tree)
-	want := "|-- Root: [r-root]\n" +
-		"    |-- OU: Production [ou-root-12345678] (SCP summary names from OU/ancestor attachments: FullAWSAccess)\n" +
-		"        |-- SCP: FullAWSAccess [p-full0001] (Attached to: root Organization Root [r-root]; Inherited: true)\n" +
-		"        |-- SCP: FullAWSAccess [p-full0001] (Attached to: organizational_unit Production [ou-root-12345678]; Inherited: false)\n" +
-		"        |-- Account: Application [123456789012] (SCP summary names from account/ancestor attachments: DenyS3, FullAWSAccess)\n" +
-		"            |-- SCP: DenyS3 [p-deny0001] (Attached to: account Application [123456789012]; Inherited: false)\n" +
-		"            |-- SCP: FullAWSAccess [p-full0001] (Attached to: root Organization Root [r-root]; Inherited: true)\n" +
-		"            |-- SCP: FullAWSAccess [p-full0001] (Attached to: organizational_unit Production [ou-root-12345678]; Inherited: true)\n"
+	want := organizationTextGolden(t, "single-account")
 	if output != want {
 		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output, want)
 	}
@@ -1894,6 +1971,9 @@ func TestBuildOrganizationTreeOrganizationalUnitPathWalksUpwardAndListsInherited
 		if attachment.Inherited != wantInherited[attachment.PolicyName] {
 			t.Fatalf("attachment %+v has unexpected inheritance", attachment)
 		}
+	}
+	if output := renderOrganizationTreeText(tree); output != organizationTextGolden(t, "single-ou") {
+		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output, organizationTextGolden(t, "single-ou"))
 	}
 }
 
@@ -2361,7 +2441,10 @@ func TestBuildManagementAccountDoesNotListSCPs(t *testing.T) {
 	if policyCalls != 0 {
 		t.Fatalf("policy API called %d times", policyCalls)
 	}
-	want := "|-- Account: Management (Management Account) [123456789012] (SCPs do not affect management-account users or roles)\n"
+	node.Selection = organizationSelection{Type: accountEntityType, TargetID: node.ID}
+	want := "Organization path to Account Management [123456789012] (management account)\n" +
+		"Account Management [123456789012] (management account)\n" +
+		"`-- SCPs do not affect its users or roles.\n"
 	if output := renderOrganizationTreeText(node); output != want {
 		t.Fatalf("unexpected output: %s, want: %s", output, want)
 	}
@@ -2434,11 +2517,16 @@ func TestOrganizationTreeRenderersStayInParityWithoutAdditionalAWSCalls(t *testi
 		t.Fatalf("build organization: %v", err)
 	}
 	textOutput := renderOrganizationTreeText(tree)
-	want := "|-- Root: [r-root]\n" +
-		"    |-- Account: Management (Management Account) [111111111111] (SCPs do not affect management-account users or roles)\n" +
-		"    |-- OU: Production [ou-root-12345678] (SCP summary names from OU/ancestor attachments: none)\n" +
-		"        |-- Account: Member [222222222222] (SCP summary names from account/ancestor attachments: none)\n" +
-		"        |-- Account: Member [333333333333] (SCP summary names from account/ancestor attachments: none)\n"
+	want := "Full organization\n" +
+		"Root [r-root]\n" +
+		"|-- Account Management [111111111111] (management account)\n" +
+		"|   `-- SCPs do not affect its users or roles.\n" +
+		"`-- OU Production [ou-root-12345678]\n" +
+		"    |-- SCPs: none\n" +
+		"    |-- Account Member [222222222222]\n" +
+		"    |   `-- SCPs: none\n" +
+		"    `-- Account Member [333333333333]\n" +
+		"        `-- SCPs: none\n"
 	if textOutput != want {
 		t.Fatalf("unexpected output:\n%s\nwant:\n%s", textOutput, want)
 	}
@@ -2475,7 +2563,10 @@ func TestOrganizationTreeRenderersStayInParityWithoutAdditionalAWSCalls(t *testi
 	}
 	var textIDs []string
 	for _, line := range strings.Split(textOutput, "\n") {
-		if line == "" || strings.Contains(line, "|-- SCP:") {
+		line = strings.TrimLeft(line, " |`-")
+		if !strings.HasPrefix(line, "Root ") &&
+			!strings.HasPrefix(line, "OU ") &&
+			!strings.HasPrefix(line, "Account ") {
 			continue
 		}
 		open := strings.IndexByte(line, '[')

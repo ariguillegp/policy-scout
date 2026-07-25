@@ -1233,77 +1233,147 @@ func nonNilSlice[T any](values []T) []T {
 
 func renderOrganizationTreeText(root organizationNode) string {
 	var output strings.Builder
-	renderOrganizationTextNode(&output, root, "")
+	if root.Selection.Type == allSelectionType {
+		output.WriteString("Full organization\n")
+	} else if target := findOrganizationNode(root, root.Selection.TargetID); target != nil {
+		fmt.Fprintf(&output, "Organization path to %s\n", organizationTextLabel(*target))
+	} else {
+		output.WriteString("Organization path\n")
+	}
+	renderOrganizationTextNode(&output, root, "", true, true)
 	return output.String()
 }
 
-func renderOrganizationTextNode(output *strings.Builder, node organizationNode, prefix string) {
+func findOrganizationNode(node organizationNode, targetID string) *organizationNode {
+	if node.ID == targetID {
+		return &node
+	}
+	for index := range node.Children {
+		if target := findOrganizationNode(node.Children[index], targetID); target != nil {
+			return target
+		}
+	}
+	return nil
+}
+
+func renderOrganizationTextNode(output *strings.Builder, node organizationNode, prefix string, last, root bool) {
+	label := organizationTextLabel(node)
+	childPrefix := prefix
+	if root {
+		fmt.Fprintln(output, label)
+	} else {
+		renderOrganizationTextLine(output, prefix, last, label)
+		if last {
+			childPrefix += indent
+		} else {
+			childPrefix += "|   "
+		}
+	}
+
+	detailCount := 0
 	switch node.Type {
-	case rootEntityType:
-		fmt.Fprintf(output, "|-- Root: [%s]\n", node.ID)
-	case organizationalUnitEntityType:
-		fmt.Fprintf(
-			output,
-			"%s|-- OU: %s [%s] (SCP summary names from OU/ancestor attachments: %s)\n",
-			prefix,
-			node.Name,
-			node.ID,
-			scpSummary(node.SCPs),
-		)
-		renderSCPAttachments(output, node.SCPAttachments, prefix)
 	case accountEntityType:
 		if node.ManagementAccount {
-			fmt.Fprintf(
-				output,
-				"%s|-- Account: %s (Management Account) [%s] (SCPs do not affect management-account users or roles)\n",
-				prefix,
-				node.Name,
-				node.ID,
-			)
+			detailCount = 1
 		} else {
-			fmt.Fprintf(
+			detailCount = max(1, len(node.SCPAttachments))
+		}
+	case organizationalUnitEntityType:
+		detailCount = max(1, len(node.SCPAttachments))
+	}
+
+	totalChildren := detailCount + len(node.Children)
+	renderedChildren := 0
+	if detailCount > 0 {
+		switch {
+		case node.ManagementAccount:
+			renderedChildren++
+			renderOrganizationTextLine(
 				output,
-				"%s|-- Account: %s [%s] (SCP summary names from account/ancestor attachments: %s)\n",
-				prefix,
-				node.Name,
-				node.ID,
-				scpSummary(node.SCPs),
+				childPrefix,
+				renderedChildren == totalChildren,
+				"SCPs do not affect its users or roles.",
 			)
-			renderSCPAttachments(output, node.SCPAttachments, prefix)
+		case len(node.SCPAttachments) == 0:
+			renderedChildren++
+			policies := "none"
+			if len(node.SCPs) > 0 {
+				policies = strings.Join(node.SCPs, ", ")
+			}
+			renderOrganizationTextLine(
+				output,
+				childPrefix,
+				renderedChildren == totalChildren,
+				"SCPs: "+policies,
+			)
+		default:
+			for _, attachment := range node.SCPAttachments {
+				renderedChildren++
+				renderOrganizationTextLine(
+					output,
+					childPrefix,
+					renderedChildren == totalChildren,
+					scpAttachmentText(attachment),
+				)
+			}
 		}
 	}
 
 	for _, child := range node.Children {
-		renderOrganizationTextNode(output, child, prefix+indent)
-	}
-}
-
-func scpSummary(scps []string) string {
-	if len(scps) == 0 {
-		return "none"
-	}
-	return strings.Join(scps, ", ")
-}
-
-func renderSCPAttachments(output *strings.Builder, attachments []scpAttachment, prefix string) {
-	for _, attachment := range attachments {
-		targetName := ""
-		if attachment.AttachedTo.Name != "" {
-			targetName = " " + attachment.AttachedTo.Name
-		}
-		fmt.Fprintf(
+		renderedChildren++
+		renderOrganizationTextNode(
 			output,
-			"%s%s|-- SCP: %s [%s] (Attached to: %s%s [%s]; Inherited: %t)\n",
-			prefix,
-			indent,
-			attachment.PolicyName,
-			attachment.PolicyID,
-			attachment.AttachedTo.Type,
-			targetName,
-			attachment.AttachedTo.ID,
-			attachment.Inherited,
+			child,
+			childPrefix,
+			renderedChildren == totalChildren,
+			false,
 		)
 	}
+}
+
+func renderOrganizationTextLine(output *strings.Builder, prefix string, last bool, text string) {
+	connector := "|-- "
+	if last {
+		connector = "`-- "
+	}
+	fmt.Fprintf(output, "%s%s%s\n", prefix, connector, text)
+}
+
+func organizationTextLabel(node organizationNode) string {
+	label := attachmentTargetText(scpAttachmentTarget{Type: node.Type, ID: node.ID, Name: node.Name})
+	if node.ManagementAccount {
+		label += " (management account)"
+	}
+	return label
+}
+
+func scpAttachmentText(attachment scpAttachment) string {
+	text := fmt.Sprintf("SCP %s [%s] — direct", attachment.PolicyName, attachment.PolicyID)
+	if attachment.Inherited {
+		text = fmt.Sprintf(
+			"SCP %s [%s] — inherited from %s",
+			attachment.PolicyName,
+			attachment.PolicyID,
+			attachmentTargetText(attachment.AttachedTo),
+		)
+	}
+	return text
+}
+
+func attachmentTargetText(target scpAttachmentTarget) string {
+	typeLabel := "Entity"
+	switch target.Type {
+	case rootEntityType:
+		typeLabel = "Root"
+	case organizationalUnitEntityType:
+		typeLabel = "OU"
+	case accountEntityType:
+		typeLabel = "Account"
+	}
+	if target.Name == "" || (target.Type == rootEntityType && strings.EqualFold(target.Name, typeLabel)) {
+		return fmt.Sprintf("%s [%s]", typeLabel, target.ID)
+	}
+	return fmt.Sprintf("%s %s [%s]", typeLabel, target.Name, target.ID)
 }
 
 // listChildren lists all children of the requested type across every response page,

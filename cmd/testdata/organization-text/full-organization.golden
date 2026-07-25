@@ -1,0 +1,20 @@
+Full organization
+Root [r-root]
+|-- Account Management [111111111111] (management account)
+|   `-- SCPs do not affect its users or roles.
+|-- Account Audit [222222222222]
+|   `-- SCPs: none
+|-- Account Shared Services [333333333333]
+|   `-- SCPs: none
+|-- OU Finance [ou-root-aaaa1111]
+|   |-- SCPs: none
+|   |-- Account Payments [444444444444]
+|   |   `-- SCPs: none
+|   |-- Account Reporting [555555555555]
+|   |   `-- SCPs: none
+|   |-- OU Payroll [ou-root-cccc3333]
+|   |   `-- SCPs: none
+|   `-- OU Tax [ou-root-dddd4444]
+|       `-- SCPs: none
+`-- OU Security [ou-root-bbbb2222]
+    `-- SCPs: none
