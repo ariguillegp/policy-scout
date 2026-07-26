@@ -1,0 +1,58 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Policy Scout
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Policy Scout. Remove or replace AWS account IDs,
+        organization IDs, ARNs, profile names, and other sensitive values before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: Policy Scout version
+      description: Paste the output of `policy-scout version`.
+      placeholder: v1.13.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include your operating system and architecture.
+      placeholder: macOS 15 arm64
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Show the command with account, OU, and profile identifiers redacted.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect Policy Scout to do?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead? Include the exit status.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Sanitized output
+      description: Include relevant stdout or stderr after removing sensitive identifiers. Never include credentials or tokens.
+      render: text
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add any other details that could help reproduce or understand the problem.

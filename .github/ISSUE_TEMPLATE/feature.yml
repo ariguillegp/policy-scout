@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest an improvement to Policy Scout
+title: "feature: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to accomplish, and what makes it difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed experience
+      description: Describe the command, output, or workflow you would like to use.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: How are you solving this today, or what other approaches did you consider?
+  - type: dropdown
+    id: compatibility
+    attributes:
+      label: Does this affect machine-readable output?
+      description: Select the closest answer; maintainers will assess the final compatibility impact.
+      options:
+        - No
+        - Yes, organization JSON
+        - Yes, authentication status JSON
+        - Yes, error JSON or exit statuses
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add examples or other information that would help explain the request.
