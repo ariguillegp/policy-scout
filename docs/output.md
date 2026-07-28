@@ -314,3 +314,158 @@ independent of the organization inspection schema version reported by
 Text search output is available with `--output-format text`. It contains the
 same matches and paths but, like other text output, is intended for people and
 is not a stable automation interface.
+
+## Focused query documents
+
+The `aws policies` and `aws attachments` subcommands are JSON-first alternatives
+to consuming the complete organization tree for common attachment questions.
+Each emits one two-space-indented, newline-terminated document. Their contracts
+are versioned independently from the organization tree; each currently uses
+`"schema_version": "1"`.
+
+### Policies applying to one target
+
+Use exactly one ID-based selector. The value `all` is intentionally not accepted:
+
+```bash
+policy-scout aws policies --account-id 339712974046 --output-format json
+policy-scout aws policies --ou-id ou-cww9-x2atbcle --output-format json
+```
+
+```json
+{
+  "schema_version": "1",
+  "target": {
+    "type": "account",
+    "id": "339712974046",
+    "name": "aws-child1",
+    "management_account": false,
+    "scp_applicable": true
+  },
+  "path": [
+    {
+      "type": "root",
+      "id": "r-cww9",
+      "name": "Root"
+    },
+    {
+      "type": "organizational_unit",
+      "id": "ou-cww9-x2atbcle",
+      "name": "Finance"
+    },
+    {
+      "type": "account",
+      "id": "339712974046",
+      "name": "aws-child1"
+    }
+  ],
+  "policies": [
+    {
+      "policy_id": "p-e5f6g7h8",
+      "policy_name": "DenyRegions",
+      "attached_to": {
+        "type": "organizational_unit",
+        "id": "ou-cww9-x2atbcle",
+        "name": "Finance"
+      },
+      "inherited": true
+    }
+  ]
+}
+```
+
+`path` is ordered from the root to the selected target. `policies` uses the
+same attachment provenance objects and ordering as `scp_attachments` in the
+organization contract: one item per unique policy-ID and attachment-target pair.
+It is `[]` when no SCP summary applies. For an OU, `management_account` is
+omitted. For an account it is always present. A selected management account has
+`"management_account": true`, `"scp_applicable": false`, and `"policies": []`;
+Policy Scout does not imply that SCPs restrict its users or roles.
+
+### Attachment and inherited reach for one SCP
+
+The policy selector is an exact AWS SCP ID. Policy Scout does not retrieve the
+policy document:
+
+```bash
+policy-scout aws attachments --policy-id p-e5f6g7h8 --output-format json
+```
+
+```json
+{
+  "schema_version": "1",
+  "policy_id": "p-e5f6g7h8",
+  "policy_name": "DenyRegions",
+  "direct_targets": [
+    {
+      "type": "organizational_unit",
+      "id": "ou-cww9-x2atbcle",
+      "name": "Finance",
+      "scp_applicable": true
+    }
+  ],
+  "affected_targets": [
+    {
+      "target": {
+        "type": "account",
+        "id": "339712974046",
+        "name": "aws-child1",
+        "management_account": false,
+        "scp_applicable": true
+      },
+      "provenance": [
+        {
+          "attached_to": {
+            "type": "organizational_unit",
+            "id": "ou-cww9-x2atbcle",
+            "name": "Finance"
+          },
+          "inherited": true
+        }
+      ]
+    },
+    {
+      "target": {
+        "type": "organizational_unit",
+        "id": "ou-cww9-x2atbcle",
+        "name": "Finance",
+        "scp_applicable": true
+      },
+      "provenance": [
+        {
+          "attached_to": {
+            "type": "organizational_unit",
+            "id": "ou-cww9-x2atbcle",
+            "name": "Finance"
+          },
+          "inherited": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+`direct_targets` contains each root, OU, or account where the SCP summary is
+attached, once. `affected_targets` contains applicable member accounts and OUs,
+once each, with every unique attachment location that makes the policy direct or
+inherited there. Root precedes account and OU direct targets; otherwise accounts
+precede OUs, and each type is ordered by ID. Affected accounts precede affected
+OUs and each type is ordered by ID. Provenance is root-to-target.
+
+Management accounts never appear in `affected_targets`. If AWS reports the SCP
+directly attached to the management account, that account appears only in
+`direct_targets` with `"management_account": true` and
+`"scp_applicable": false`. This records the attachment without claiming that
+the SCP affects the management account's users or roles.
+
+For an existing but unattached policy ID, `policy_name` is `""` and both arrays
+are explicitly `[]`. A nonexistent policy is reported as an AWS failure. Policy
+Scout only knows policy names returned by attachment-summary calls; it does not
+call `DescribePolicy` or retrieve SCP content.
+
+Both query commands also accept `--output-format text` for concise interactive
+output. JSON is the stable automation contract. Within a query schema version,
+consumers must tolerate additive object fields. Removing or renaming fields,
+changing their types or meanings, or restructuring one query document requires
+a new schema version for that query.

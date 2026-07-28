@@ -70,6 +70,33 @@ requests, no additional permission or AWS cost, and output remains schema v1.
 As with discovery failures, a policy retrieval or JSON-decoding failure leaves
 stdout empty.
 
+For agents that need only one target or one known SCP, prefer the focused query
+documents instead of parsing a complete organization tree:
+
+```bash
+policy-scout --error-format json aws policies \
+  --account-id 339712974046 --output-format json --timeout 30s \
+  > applicable-policies.json 2> policy-scout-error.json
+
+policy-scout --error-format json aws attachments \
+  --policy-id p-e5f6g7h8 --output-format json --timeout 30s \
+  > attachment-reach.json 2> policy-scout-error.json
+```
+
+The [focused query contracts](output.md#focused-query-documents) document their
+field presence, management-account behavior, and deterministic ordering. Like
+ordinary organization traversal, either command writes its result only after
+all required AWS calls and rendering succeed. A nonzero exit status therefore
+leaves stdout empty rather than containing a partial JSON document.
+
+`aws policies` makes calls only for one target, its ancestors, and required
+organization metadata. `aws attachments` uses `ListTargetsForPolicy`, then
+traverses only directly attached root and OU scopes to calculate inherited
+reach. A root attachment requires a full descendant traversal; an OU attachment
+requires only that OU's subtree; account-only attachments require no descendant
+traversal. Pagination, duplicate API entries, timeout, and retry behavior are
+the same as for organization traversal.
+
 ## Structured errors
 
 `--error-format json` produces one compact JSON object on stderr. The flag is

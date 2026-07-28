@@ -139,6 +139,13 @@ policy-scout aws --account-id 339712974046
 policy-scout aws --ou-id ou-cww9-x2atbcle
 policy-scout aws --account-id all
 
+# Return only the policies applying to one exact target
+policy-scout aws policies --account-id 339712974046
+policy-scout aws policies --ou-id ou-cww9-x2atbcle
+
+# Find direct and inherited reach for one exact SCP ID
+policy-scout aws attachments --policy-id p-a1b2c3d4
+
 # Bound AWS work in CI or another automated environment
 policy-scout aws --account-id all --timeout 30s --max-retries 3
 
@@ -165,17 +172,28 @@ The selected identity needs the following permissions, depending on the scope
 requested:
 
 - `organizations:ListRoots`
-- `organizations:ListChildren` for name search or the entire organization
+- `organizations:ListChildren` for name search, the entire organization, or
+  attached root/OU scopes queried by `aws attachments`
 - `organizations:DescribeAccount` for account search or account inspection
 - `organizations:DescribeOrganizationalUnit` for any traversal through OUs
-- `organizations:DescribeOrganization` for an account or the entire organization
+- `organizations:DescribeOrganization` for an account, the entire organization,
+  or `aws attachments`
 - `organizations:ListParents`
 - `organizations:ListPoliciesForTarget`
 - `organizations:DescribePolicy` only with `--include-policy-documents`
+- `organizations:ListTargetsForPolicy` for `aws attachments`
 
 `aws search` only needs `ListRoots`, `ListChildren`, and the applicable
 `DescribeAccount`/`DescribeOrganizationalUnit` permissions. It does not list
 policy attachments or retrieve policy documents.
+
+`aws policies` inspects only the selected target and its ancestors. `aws
+attachments` uses `ListTargetsForPolicy` for direct locations, then traverses
+only directly attached roots and OU subtrees to determine inherited reach. It
+therefore also needs `DescribeAccount` and `DescribeOrganizationalUnit` for
+descendants encountered in those scopes. A policy attached only to accounts
+does not require descendant traversal. AWS permits `ListTargetsForPolicy` only
+from the management account or an Organizations delegated administrator.
 
 ## Documentation
 

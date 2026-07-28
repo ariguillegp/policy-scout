@@ -92,6 +92,7 @@ type organizationsClient interface {
 	organizations.ListParentsAPIClient
 	organizations.ListPoliciesForTargetAPIClient
 	organizations.ListRootsAPIClient
+	organizations.ListTargetsForPolicyAPIClient
 	DescribeAccount(context.Context, *organizations.DescribeAccountInput, ...func(*organizations.Options)) (*organizations.DescribeAccountOutput, error)
 	DescribeOrganizationalUnit(context.Context, *organizations.DescribeOrganizationalUnitInput, ...func(*organizations.Options)) (*organizations.DescribeOrganizationalUnitOutput, error)
 	DescribeOrganization(context.Context, *organizations.DescribeOrganizationInput, ...func(*organizations.Options)) (*organizations.DescribeOrganizationOutput, error)
@@ -185,6 +186,8 @@ func init() {
 	rootCmd.AddCommand(awsCmd)
 	awsCmd.AddCommand(authCmd)
 	awsCmd.AddCommand(awsSearchCmd)
+	awsCmd.AddCommand(awsPoliciesCmd)
+	awsCmd.AddCommand(awsAttachmentsCmd)
 	authCmd.AddCommand(authStatusCmd)
 
 	awsCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS shared-config profile to use (overrides AWS_PROFILE)")

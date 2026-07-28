@@ -58,6 +58,7 @@ type fakeOrganizationsClient struct {
 	listParentsFn              func(context.Context, *organizations.ListParentsInput) (*organizations.ListParentsOutput, error)
 	listPoliciesForTargetFn    func(context.Context, *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error)
 	listRootsFn                func(context.Context, *organizations.ListRootsInput) (*organizations.ListRootsOutput, error)
+	listTargetsForPolicyFn     func(context.Context, *organizations.ListTargetsForPolicyInput) (*organizations.ListTargetsForPolicyOutput, error)
 	describeAccountFn          func(context.Context, *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error)
 	describeOrganizationalUnit func(context.Context, *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error)
 	describeOrganizationFn     func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error)
@@ -106,6 +107,17 @@ func (fake *fakeOrganizationsClient) ListRoots(
 		return &organizations.ListRootsOutput{}, nil
 	}
 	return fake.listRootsFn(ctx, input)
+}
+
+func (fake *fakeOrganizationsClient) ListTargetsForPolicy(
+	ctx context.Context,
+	input *organizations.ListTargetsForPolicyInput,
+	_ ...func(*organizations.Options),
+) (*organizations.ListTargetsForPolicyOutput, error) {
+	if fake.listTargetsForPolicyFn == nil {
+		return &organizations.ListTargetsForPolicyOutput{}, nil
+	}
+	return fake.listTargetsForPolicyFn(ctx, input)
 }
 
 func (fake *fakeOrganizationsClient) DescribeAccount(

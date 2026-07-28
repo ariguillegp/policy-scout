@@ -149,6 +149,26 @@ func TestInvalidInvocationsUseStderrAndStableExitStatuses(t *testing.T) {
 			wantCode: "invalid_invocation", wantMessagePart: "--type",
 		},
 		{
+			name: "policies missing target",
+			args: []string{"aws", "policies"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--account-id",
+		},
+		{
+			name: "policies all target",
+			args: []string{"aws", "policies", "--account-id", "all"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "one exact account",
+		},
+		{
+			name: "attachments missing policy ID",
+			args: []string{"aws", "attachments"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--policy-id",
+		},
+		{
+			name: "attachments malformed policy ID",
+			args: []string{"aws", "attachments", "--policy-id", "not-a-policy"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--policy-id",
+		},
+		{
 			// Extra positional arguments to version are classified as invalid_invocation,
 			// matching root, aws, and aws auth status.
 			name: "extra version positional argument", args: []string{"version", "extra"}, wantStatus: 2,

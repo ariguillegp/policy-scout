@@ -83,6 +83,35 @@ func TestAWSAuthStatusHelpDocumentsOutputFormat(t *testing.T) {
 	}
 }
 
+func TestAWSQueryHelpDocumentsVersionedFocusedContracts(t *testing.T) {
+	policiesHelp := renderHelp(t, awsPoliciesCmd)
+	for _, expected := range []string{
+		"one compact, versioned result",
+		"--account-id",
+		"--ou-id",
+		"--output-format text|json",
+		"--timeout",
+		"--max-retries",
+	} {
+		if !strings.Contains(policiesHelp, expected) {
+			t.Errorf("policies help missing %q:\n%s", expected, policiesHelp)
+		}
+	}
+
+	attachmentsHelp := renderHelp(t, awsAttachmentsCmd)
+	for _, expected := range []string{
+		"one compact, versioned result",
+		"--policy-id",
+		"Management accounts can appear as",
+		"never as affected targets",
+		"--output-format text|json",
+	} {
+		if !strings.Contains(attachmentsHelp, expected) {
+			t.Errorf("attachments help missing %q:\n%s", expected, attachmentsHelp)
+		}
+	}
+}
+
 func TestVersionHelpDocumentsOutputFormat(t *testing.T) {
 	output := renderHelp(t, versionCmd)
 
