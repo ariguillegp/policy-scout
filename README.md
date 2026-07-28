@@ -32,6 +32,7 @@ Root [r-cww9]
 - Identify the management account, whose users and roles are not affected by SCPs.
 - Produce a terminal-friendly tree or stable, structured JSON for automation.
 - Optionally include each unique applicable SCP document once in structured JSON.
+- Print version-matched JSON Schemas locally without AWS credentials or network access.
 
 ## Installation
 
@@ -115,6 +116,13 @@ policy-scout aws --account-id all --include-policy-documents --output-format jso
 This opt-in output uses organization schema v2. Without the flag, Policy Scout
 does not call `DescribePolicy` and continues to emit schema v1 exactly as before.
 
+Publish either organization schema from the same installed binary:
+
+```bash
+policy-scout schema organization > organization.schema.json
+policy-scout schema organization-v2 > organization-v2.schema.json
+```
+
 For an AWS IAM Identity Center (SSO) profile, authenticate first and pass the
 profile explicitly:
 
@@ -152,7 +160,16 @@ policy-scout aws --account-id all --timeout 30s --max-retries 3
 # Include a deduplicated catalog of parsed SCP documents (JSON only)
 policy-scout aws --account-id all --include-policy-documents --output-format json
 
-# Discover the binary and organization JSON schema versions
+# Print version-matched JSON Schemas without AWS credentials
+policy-scout schema organization
+policy-scout schema organization-v2
+policy-scout schema auth-status
+policy-scout schema error
+policy-scout schema search
+policy-scout schema policies
+policy-scout schema attachments
+
+# Discover the binary and published JSON Schema versions
 policy-scout version
 policy-scout version --output-format json
 ```
@@ -165,6 +182,13 @@ the AWS SDK or shared-configuration defaults.
 Name search is exact and case-sensitive. It succeeds with an explicit empty
 `matches` array when nothing matches, and never chooses among duplicate names.
 Run `policy-scout aws search --help` for its complete contract and examples.
+
+Published schemas use JSON Schema Draft 2020-12 and are embedded in release
+binaries, so schema discovery performs no network access. Validate output with
+the schema emitted by the same binary version. Formal schemas cover both
+organization versions, auth-status, structured errors, entity search, and both
+focused queries. Each document carries its own `schema_version`; consumers must
+tolerate additive object fields within a schema version.
 
 ## Required AWS permissions
 

@@ -89,6 +89,11 @@ ordinary organization traversal, either command writes its result only after
 all required AWS calls and rendering succeed. A nonzero exit status therefore
 leaves stdout empty rather than containing a partial JSON document.
 
+Every current JSON result and diagnostic has an embedded, credential-free
+Draft 2020-12 schema. Run `policy-scout schema --help` to discover the seven
+published contracts, including separate organization v1/v2 and focused-query
+schemas. Validate each document with the schema emitted by the same binary.
+
 `aws policies` makes calls only for one target, its ancestors, and required
 organization metadata. `aws attachments` uses `ListTargetsForPolicy`, then
 traverses only directly attached root and OU scopes to calculate inherited
@@ -104,6 +109,7 @@ independent of `--output-format` and may appear before or after the subcommand.
 
 ```json
 {
+  "schema_version": "1",
   "code": "aws_access_denied",
   "message": "AWS denied the Organizations request.",
   "operation": "ListRoots",
@@ -116,6 +122,23 @@ independent of `--output-format` and may appear before or after the subcommand.
 `operation` and `request_id` are omitted when unavailable. Messages and
 remediation are curated and never include credentials or raw credential-provider
 errors.
+
+`schema_version` identifies the structured-error contract and is independent
+of the exit status and organization schema version. Print its authoritative
+schema locally, without AWS credentials or network access:
+
+```bash
+policy-scout schema error
+```
+
+The schema uses JSON Schema Draft 2020-12 and has canonical identifier
+`https://policy-scout.dev/schemas/error/v1`. Its version is also exposed as
+`error_schema_version` by `policy-scout version --output-format json`. Use the
+schema emitted by the same binary that produced the diagnostic. Consumers must
+tolerate additive object fields within a schema version; field removal,
+renaming, type or meaning changes, or document restructuring require a new
+structured-error schema version. Exit status remains a separate process-level
+signal and is intentionally absent from the JSON object.
 
 ## Exit statuses
 

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://policy-scout.dev/schemas/auth-status/v1",
+  "title": "Policy Scout AWS auth-status schema v1",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "ok": { "type": "boolean" },
+    "authenticated": { "const": true },
+    "identity": {
+      "type": "object",
+      "properties": {
+        "account_id": { "type": "string", "minLength": 1 },
+        "arn": { "type": "string", "minLength": 1 },
+        "user_id": { "type": "string", "minLength": 1 }
+      },
+      "required": ["account_id", "arn", "user_id"]
+    },
+    "credentials": {
+      "type": "object",
+      "properties": {
+        "source": { "type": "string" },
+        "can_expire": { "type": "boolean" },
+        "expires_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["source", "can_expire"],
+      "oneOf": [
+        {
+          "properties": { "can_expire": { "const": true } },
+          "required": ["expires_at"]
+        },
+        {
+          "properties": { "can_expire": { "const": false } },
+          "not": { "required": ["expires_at"] }
+        }
+      ]
+    },
+    "organizations": {
+      "type": "object",
+      "properties": {
+        "accessible": { "type": "boolean" },
+        "organization_id": { "type": "string" },
+        "management_account_id": { "type": "string" },
+        "error": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 }
+      },
+      "required": ["accessible"]
+    }
+  },
+  "required": ["schema_version", "ok", "authenticated", "identity", "credentials", "organizations"],
+  "oneOf": [
+    {
+      "properties": {
+        "ok": { "const": true },
+        "organizations": {
+          "properties": { "accessible": { "const": true } },
+          "allOf": [
+            { "not": { "required": ["error"] } },
+            { "not": { "required": ["message"] } }
+          ]
+        }
+      }
+    },
+    {
+      "properties": {
+        "ok": { "const": false },
+        "organizations": {
+          "properties": { "accessible": { "const": false } },
+          "required": ["error", "message"],
+          "allOf": [
+            { "not": { "required": ["organization_id"] } },
+            { "not": { "required": ["management_account_id"] } }
+          ]
+        }
+      }
+    }
+  ]
+}

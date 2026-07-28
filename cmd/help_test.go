@@ -28,8 +28,10 @@ func TestRootHelpAdvertisesCommandsAndErrorFormat(t *testing.T) {
 	for _, expected := range []string{
 		"Inspect cloud organization policies from one CLI",
 		"aws",
+		"schema",
 		"version",
 		"Show AWS paths and localized SCP attachments for OUs and accounts",
+		"Print JSON Schemas for machine-readable output",
 		"Print binary and JSON schema versions",
 		"--error-format human|json",
 		`"human" or "json"`,
@@ -42,6 +44,24 @@ func TestRootHelpAdvertisesCommandsAndErrorFormat(t *testing.T) {
 	for _, hidden := range []string{"gcp", "toggle"} {
 		if strings.Contains(output, hidden) {
 			t.Errorf("root help unexpectedly advertises %q:\n%s", hidden, output)
+		}
+	}
+}
+
+func TestSchemaHelpAdvertisesPublishedContracts(t *testing.T) {
+	output := renderHelp(t, schemaCmd)
+	for _, expected := range []string{
+		"Print JSON Schemas for machine-readable output",
+		"organization",
+		"organization-v2",
+		"auth-status",
+		"error",
+		"search",
+		"policies",
+		"attachments",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("schema help missing %q:\n%s", expected, output)
 		}
 	}
 }

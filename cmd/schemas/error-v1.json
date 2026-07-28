@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://policy-scout.dev/schemas/error/v1",
+  "title": "Policy Scout structured error schema v1",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "code": {
+      "enum": [
+        "unexpected",
+        "invalid_invocation",
+        "aws_credentials",
+        "aws_access_denied",
+        "aws_transient"
+      ]
+    },
+    "message": { "type": "string", "minLength": 1 },
+    "operation": { "type": "string", "minLength": 1 },
+    "retryable": { "type": "boolean" },
+    "request_id": { "type": "string", "minLength": 1 },
+    "remediation": { "type": "string", "minLength": 1 }
+  },
+  "required": ["schema_version", "code", "message", "retryable", "remediation"],
+  "allOf": [
+    { "not": { "required": ["exit_code"] } },
+    { "not": { "required": ["ExitCode"] } }
+  ]
+}

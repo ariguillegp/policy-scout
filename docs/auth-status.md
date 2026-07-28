@@ -10,9 +10,8 @@ policy-scout aws auth status --output-format text
 policy-scout aws auth status --profile security-audit
 ```
 
-With JSON output, a completed status is an unwrapped object on stdout. It has no
-`schema_version` field. No secret credential values are displayed; `credentials`
-contains metadata only.
+With JSON output, a completed status is an unwrapped object on stdout. No secret
+credential values are displayed; `credentials` contains metadata only.
 
 > [!IMPORTANT]
 > If identity resolution succeeds but the Organizations check fails, the command
@@ -23,6 +22,7 @@ contains metadata only.
 
 | Field | Type | Presence | Meaning |
 | --- | --- | --- | --- |
+| `schema_version` | string | always | Auth-status contract version; currently `"1"`. |
 | `ok` | boolean | always | `true` only when identity resolves and Organizations is accessible. |
 | `authenticated` | boolean | always | `true` when STS returned a complete identity. |
 | `identity` | object | always | Resolved caller identity. |
@@ -49,6 +49,7 @@ Exit status `0`; stdout contains the document and stderr is empty.
 
 ```json
 {
+  "schema_version": "1",
   "ok": true,
   "authenticated": true,
   "identity": {
@@ -79,6 +80,7 @@ stdout:
 
 ```json
 {
+  "schema_version": "1",
   "ok": false,
   "authenticated": true,
   "identity": {
@@ -101,7 +103,7 @@ stdout:
 stderr with `--error-format json`:
 
 ```json
-{"code":"aws_access_denied","message":"AWS denied the Organizations request.","operation":"DescribeOrganization","retryable":false,"remediation":"Grant the selected identity the required AWS Organizations read permissions, then retry."}
+{"schema_version":"1","code":"aws_access_denied","message":"AWS denied the Organizations request.","operation":"DescribeOrganization","retryable":false,"remediation":"Grant the selected identity the required AWS Organizations read permissions, then retry."}
 ```
 
 The same command with the default human error format writes:
@@ -134,9 +136,18 @@ exhaustion. A transient configuration or credential-retrieval failure is
 
 ## Compatibility
 
-The auth status document has no `schema_version`; the organization schema does
-not cover it. Within a binary version, consumers must tolerate additive object
-fields. Removing or renaming fields, changing their types or meanings, or
-restructuring the document requires a binary version bump and documentation
-update. Use `policy-scout version --output-format json` as the compatibility
-anchor.
+The auth-status document has its own `schema_version`, independent from the
+organization result. Print its authoritative JSON Schema without AWS
+credentials or network access:
+
+```bash
+policy-scout schema auth-status
+```
+
+The schema uses JSON Schema Draft 2020-12 and has canonical identifier
+`https://policy-scout.dev/schemas/auth-status/v1`. Its version is also exposed
+as `auth_status_schema_version` by `policy-scout version --output-format json`.
+Use the schema emitted by the same binary that produced the status. Within one
+schema version, consumers must tolerate additive object fields. Removing or
+renaming fields, changing their types or meanings, or restructuring the
+document requires a new auth-status schema version.

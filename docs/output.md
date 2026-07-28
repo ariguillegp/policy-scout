@@ -218,7 +218,7 @@ that account.
 
 ## Version compatibility
 
-Discover the binary and organization schema versions without AWS credentials:
+Discover the binary and published JSON Schema versions without AWS credentials:
 
 ```bash
 policy-scout version --output-format json
@@ -228,7 +228,12 @@ policy-scout version --output-format json
 {
   "version": "1.13.0",
   "organization_schema_version": "1",
-  "organization_schema_versions": ["1", "2"]
+  "organization_schema_versions": ["1", "2"],
+  "auth_status_schema_version": "1",
+  "error_schema_version": "1",
+  "search_schema_version": "1",
+  "policies_schema_version": "1",
+  "attachments_schema_version": "1"
 }
 ```
 
@@ -246,9 +251,25 @@ document requires a new schema version.
 Organization JSON remains two-space indented and newline-terminated. Consumers
 should parse JSON rather than use whitespace as a delimiter.
 
-Policy Scout does not currently publish a formal JSON Schema. The field-presence
-table above is the producer contract for the hierarchy shared by schemas v1 and
-v2; the policy-catalog section defines the v2 addition.
+## Formal JSON Schema
+
+Print the authoritative, version-matched schema without AWS credentials or
+network access:
+
+```bash
+policy-scout schema organization
+policy-scout schema organization-v2
+policy-scout schema organization > organization.schema.json
+```
+
+The schemas use JSON Schema Draft 2020-12 and have canonical identifiers
+`https://policy-scout.dev/schemas/organization/v1` and
+`https://policy-scout.dev/schemas/organization/v2`. They capture selection
+variants, discriminated node types, required arrays, attachment provenance,
+management-account omissions, and the v2 parsed policy catalog. Use the schema
+emitted by the same binary that produced the result. Schemas permit unknown
+additive fields for forward compatibility while continuing to enforce the
+documented presence and omission of existing fields.
 
 ## AWS entity search JSON contract
 
@@ -308,8 +329,11 @@ The search schema v1 contract is:
 
 Search JSON is two-space indented and newline-terminated. Within schema v1,
 consumers must tolerate additive object fields. The search schema version is
-independent of the organization inspection schema version reported by
-`policy-scout version`.
+independent of the organization inspection schema version and is reported as
+`search_schema_version` by `policy-scout version --output-format json`.
+
+Print its Draft 2020-12 schema locally with `policy-scout schema search`. Its
+canonical identifier is `https://policy-scout.dev/schemas/search/v1`.
 
 Text search output is available with `--output-format text`. It contains the
 same matches and paths but, like other text output, is intended for people and
@@ -322,6 +346,19 @@ to consuming the complete organization tree for common attachment questions.
 Each emits one two-space-indented, newline-terminated document. Their contracts
 are versioned independently from the organization tree; each currently uses
 `"schema_version": "1"`.
+
+Print their Draft 2020-12 schemas locally:
+
+```bash
+policy-scout schema policies
+policy-scout schema attachments
+```
+
+Their canonical identifiers are
+`https://policy-scout.dev/schemas/policies/v1` and
+`https://policy-scout.dev/schemas/attachments/v1`. The matching
+`policies_schema_version` and `attachments_schema_version` fields are available
+from `policy-scout version --output-format json`.
 
 ### Policies applying to one target
 

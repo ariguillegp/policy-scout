@@ -35,6 +35,19 @@ func TestVersionJSON(t *testing.T) {
 	if !reflect.DeepEqual(result.OrganizationSchemaVersions, wantVersions) {
 		t.Fatalf("organization schema versions are %v, want %v", result.OrganizationSchemaVersions, wantVersions)
 	}
+	if result.AuthStatusSchemaVersion != authStatusJSONSchemaVersion ||
+		result.ErrorSchemaVersion != errorJSONSchemaVersion {
+		t.Fatalf("auth-status/error schema versions = %q/%q, want %q/%q",
+			result.AuthStatusSchemaVersion, result.ErrorSchemaVersion,
+			authStatusJSONSchemaVersion, errorJSONSchemaVersion)
+	}
+	if result.SearchSchemaVersion != awsSearchJSONSchemaVersion ||
+		result.PoliciesSchemaVersion != policiesQuerySchemaVersion ||
+		result.AttachmentsSchemaVersion != attachmentsQuerySchemaVersion {
+		t.Fatalf("search/policies/attachments schema versions = %q/%q/%q, want %q/%q/%q",
+			result.SearchSchemaVersion, result.PoliciesSchemaVersion, result.AttachmentsSchemaVersion,
+			awsSearchJSONSchemaVersion, policiesQuerySchemaVersion, attachmentsQuerySchemaVersion)
+	}
 }
 
 func TestDevelopmentVersion(t *testing.T) {

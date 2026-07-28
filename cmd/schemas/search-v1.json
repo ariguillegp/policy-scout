@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://policy-scout.dev/schemas/search/v1",
+  "title": "Policy Scout AWS entity-search result schema v1",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "query": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["account", "organizational_unit"] }
+      },
+      "required": ["name"]
+    },
+    "matches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "enum": ["account", "organizational_unit"] },
+          "id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "path": {
+            "type": "array",
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": { "const": "root" },
+                  "id": { "type": "string", "minLength": 1 },
+                  "name": { "type": "string" }
+                },
+                "required": ["type", "id"]
+              }
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": { "enum": ["organizational_unit", "account"] },
+                "id": { "type": "string", "minLength": 1 },
+                "name": { "type": "string", "minLength": 1 }
+              },
+              "required": ["type", "id", "name"]
+            }
+          }
+        },
+        "required": ["type", "id", "name", "path"]
+      }
+    }
+  },
+  "required": ["schema_version", "query", "matches"]
+}

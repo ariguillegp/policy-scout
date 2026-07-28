@@ -55,13 +55,14 @@ func (value *errorFormat) Set(raw string) error {
 func (value *errorFormat) Type() string { return "human|json" }
 
 type classifiedError struct {
-	Code        string `json:"code"`
-	Message     string `json:"message"`
-	Operation   string `json:"operation,omitempty"`
-	Retryable   bool   `json:"retryable"`
-	RequestID   string `json:"request_id,omitempty"`
-	Remediation string `json:"remediation"`
-	ExitCode    int    `json:"-"`
+	SchemaVersion string `json:"schema_version"`
+	Code          string `json:"code"`
+	Message       string `json:"message"`
+	Operation     string `json:"operation,omitempty"`
+	Retryable     bool   `json:"retryable"`
+	RequestID     string `json:"request_id,omitempty"`
+	Remediation   string `json:"remediation"`
+	ExitCode      int    `json:"-"`
 }
 
 type errorKind int
@@ -286,6 +287,7 @@ func requestID(err error) string {
 
 func writeError(writer io.Writer, diagnostic classifiedError, format errorFormat) error {
 	if format == errorFormatJSON {
+		diagnostic.SchemaVersion = errorJSONSchemaVersion
 		return encodingjson.NewEncoder(writer).Encode(diagnostic)
 	}
 

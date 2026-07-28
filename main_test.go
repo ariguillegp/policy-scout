@@ -69,6 +69,7 @@ func TestRootNoArgumentsMatchesRootHelp(t *testing.T) {
 		"Inspect cloud organization policies from one CLI",
 		"Usage:\n  policy-scout [flags]\n  policy-scout [command]",
 		"Show AWS paths and localized SCP attachments",
+		"Print JSON Schemas for machine-readable output",
 		"Print binary and JSON schema versions",
 		"--error-format",
 	} {
@@ -218,15 +219,54 @@ func TestVersionTextAndJSON(t *testing.T) {
 			Version                    string   `json:"version"`
 			OrganizationSchemaVersion  string   `json:"organization_schema_version"`
 			OrganizationSchemaVersions []string `json:"organization_schema_versions"`
+			AuthStatusSchemaVersion    string   `json:"auth_status_schema_version"`
+			ErrorSchemaVersion         string   `json:"error_schema_version"`
+			SearchSchemaVersion        string   `json:"search_schema_version"`
+			PoliciesSchemaVersion      string   `json:"policies_schema_version"`
+			AttachmentsSchemaVersion   string   `json:"attachments_schema_version"`
 		}
 		if err := json.Unmarshal([]byte(result.stdout), &info); err != nil {
 			t.Fatalf("stdout is not version JSON: %q: %v", result.stdout, err)
 		}
 		if info.Version != contractTestVersion || info.OrganizationSchemaVersion != "1" ||
-			!reflect.DeepEqual(info.OrganizationSchemaVersions, []string{"1", "2"}) {
-			t.Fatalf("version JSON = %#v, want version %q, default schema 1, and supported schemas [1 2]", info, contractTestVersion)
+			!reflect.DeepEqual(info.OrganizationSchemaVersions, []string{"1", "2"}) ||
+			info.AuthStatusSchemaVersion != "1" || info.ErrorSchemaVersion != "1" ||
+			info.SearchSchemaVersion != "1" || info.PoliciesSchemaVersion != "1" ||
+			info.AttachmentsSchemaVersion != "1" {
+			t.Fatalf("version JSON = %#v, want version %q, organization schemas [1 2], and all other schemas at 1", info, contractTestVersion)
 		}
 	})
+}
+
+func TestSchemaCommandsAreLocalAndPublishStableSchemas(t *testing.T) {
+	wantIDs := map[string]string{
+		"organization":    "https://policy-scout.dev/schemas/organization/v1",
+		"organization-v2": "https://policy-scout.dev/schemas/organization/v2",
+		"auth-status":     "https://policy-scout.dev/schemas/auth-status/v1",
+		"error":           "https://policy-scout.dev/schemas/error/v1",
+		"search":          "https://policy-scout.dev/schemas/search/v1",
+		"policies":        "https://policy-scout.dev/schemas/policies/v1",
+		"attachments":     "https://policy-scout.dev/schemas/attachments/v1",
+	}
+	for name, wantID := range wantIDs {
+		t.Run(name, func(t *testing.T) {
+			result := runCLI(t, "schema", name)
+			assertSuccessfulProcess(t, result, name+" schema")
+			if !strings.HasSuffix(result.stdout, "\n") {
+				t.Fatalf("schema output is not newline-terminated: %q", result.stdout)
+			}
+			var metadata struct {
+				Schema string `json:"$schema"`
+				ID     string `json:"$id"`
+			}
+			if err := json.Unmarshal([]byte(result.stdout), &metadata); err != nil {
+				t.Fatalf("schema output is not JSON: %v\n%s", err, result.stdout)
+			}
+			if metadata.Schema != "https://json-schema.org/draft/2020-12/schema" || metadata.ID != wantID {
+				t.Fatalf("schema metadata = %#v, want Draft 2020-12 and ID %q", metadata, wantID)
+			}
+		})
+	}
 }
 
 func TestMissingAWSCredentialsAreClassifiedWithoutDeveloperCredentials(t *testing.T) {
@@ -239,13 +279,14 @@ func TestMissingAWSCredentialsAreClassifiedWithoutDeveloperCredentials(t *testin
 	}
 
 	var diagnostic struct {
-		Code      string `json:"code"`
-		Retryable bool   `json:"retryable"`
+		SchemaVersion string `json:"schema_version"`
+		Code          string `json:"code"`
+		Retryable     bool   `json:"retryable"`
 	}
 	if err := json.Unmarshal([]byte(result.stderr), &diagnostic); err != nil {
 		t.Fatalf("stderr is not a JSON diagnostic: %q: %v", result.stderr, err)
 	}
-	if diagnostic.Code != "aws_credentials" || diagnostic.Retryable {
+	if diagnostic.SchemaVersion != "1" || diagnostic.Code != "aws_credentials" || diagnostic.Retryable {
 		t.Fatalf("diagnostic = %#v, want non-retryable aws_credentials", diagnostic)
 	}
 }

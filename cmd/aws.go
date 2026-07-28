@@ -328,6 +328,7 @@ func runAWSAuthStatusCommand(cmd *cobra.Command) error {
 }
 
 type awsAuthStatus struct {
+	SchemaVersion string                     `json:"schema_version"`
 	OK            bool                       `json:"ok"`
 	Authenticated bool                       `json:"authenticated"`
 	Identity      awsAuthIdentity            `json:"identity"`
@@ -445,6 +446,7 @@ func getAWSAuthStatus(
 	}
 
 	status := awsAuthStatus{
+		SchemaVersion: authStatusJSONSchemaVersion,
 		Authenticated: true,
 		Identity: awsAuthIdentity{
 			AccountID: aws.ToString(identity.Account),
@@ -515,6 +517,7 @@ func writeAWSAuthStatus(writer io.Writer, status awsAuthStatus, outputFormat out
 		return writeOutput(writer, "AWS Organizations: not accessible\nError: %s\nMessage: %s\n", status.Organizations.Error, status.Organizations.Message)
 	}
 
+	status.SchemaVersion = authStatusJSONSchemaVersion
 	encoder := encodingjson.NewEncoder(writer)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(status); err != nil {

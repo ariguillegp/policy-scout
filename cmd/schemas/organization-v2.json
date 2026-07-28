@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://policy-scout.dev/schemas/organization/v2",
+  "title": "Policy Scout organization result schema v2",
+  "$ref": "#/$defs/root",
+  "$defs": {
+    "selection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": { "type": { "const": "all" } },
+          "required": ["type"],
+          "not": { "required": ["target_id"] }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "enum": ["account", "organizational_unit"] },
+            "target_id": { "type": "string", "minLength": 1 }
+          },
+          "required": ["type", "target_id"]
+        }
+      ]
+    },
+    "attachmentTarget": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["root", "organizational_unit", "account"] },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" }
+      },
+      "required": ["type", "id"]
+    },
+    "attachment": {
+      "type": "object",
+      "properties": {
+        "policy_id": { "type": "string", "minLength": 1 },
+        "policy_name": { "type": "string" },
+        "attached_to": { "$ref": "#/$defs/attachmentTarget" },
+        "inherited": { "type": "boolean" }
+      },
+      "required": ["policy_id", "policy_name", "attached_to", "inherited"]
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "arn": { "type": "string" },
+        "aws_managed": { "type": "boolean" },
+        "content": { "type": "object" }
+      },
+      "required": ["id", "name", "aws_managed", "content"]
+    },
+    "root": {
+      "type": "object",
+      "properties": {
+        "schema_version": { "const": "2" },
+        "selection": { "$ref": "#/$defs/selection" },
+        "type": { "const": "root" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "policies": { "type": "array", "items": { "$ref": "#/$defs/policy" } },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/node" } }
+      },
+      "required": ["schema_version", "selection", "type", "id", "policies", "children"],
+      "allOf": [
+        { "not": { "required": ["management_account"] } },
+        { "not": { "required": ["scps"] } },
+        { "not": { "required": ["scp_attachments"] } }
+      ]
+    },
+    "organizationalUnit": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "organizational_unit" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "scps": { "type": "array", "items": { "type": "string" } },
+        "scp_attachments": { "type": "array", "items": { "$ref": "#/$defs/attachment" } },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/node" } }
+      },
+      "required": ["type", "id", "name", "scps", "scp_attachments", "children"],
+      "allOf": [
+        { "not": { "required": ["schema_version"] } },
+        { "not": { "required": ["selection"] } },
+        { "not": { "required": ["policies"] } },
+        { "not": { "required": ["management_account"] } }
+      ]
+    },
+    "memberAccount": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "account" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "management_account": { "const": false },
+        "scps": { "type": "array", "items": { "type": "string" } },
+        "scp_attachments": { "type": "array", "items": { "$ref": "#/$defs/attachment" } }
+      },
+      "required": ["type", "id", "name", "management_account", "scps", "scp_attachments"],
+      "allOf": [
+        { "not": { "required": ["schema_version"] } },
+        { "not": { "required": ["selection"] } },
+        { "not": { "required": ["policies"] } },
+        { "not": { "required": ["children"] } }
+      ]
+    },
+    "managementAccount": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "account" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "management_account": { "const": true }
+      },
+      "required": ["type", "id", "name", "management_account"],
+      "allOf": [
+        { "not": { "required": ["schema_version"] } },
+        { "not": { "required": ["selection"] } },
+        { "not": { "required": ["policies"] } },
+        { "not": { "required": ["scps"] } },
+        { "not": { "required": ["scp_attachments"] } },
+        { "not": { "required": ["children"] } }
+      ]
+    },
+    "node": {
+      "oneOf": [
+        { "$ref": "#/$defs/organizationalUnit" },
+        { "$ref": "#/$defs/memberAccount" },
+        { "$ref": "#/$defs/managementAccount" }
+      ]
+    }
+  }
+}

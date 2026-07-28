@@ -18,6 +18,11 @@ type versionInfo struct {
 	Version                    string   `json:"version"`
 	OrganizationSchemaVersion  string   `json:"organization_schema_version"`
 	OrganizationSchemaVersions []string `json:"organization_schema_versions"`
+	AuthStatusSchemaVersion    string   `json:"auth_status_schema_version"`
+	ErrorSchemaVersion         string   `json:"error_schema_version"`
+	SearchSchemaVersion        string   `json:"search_schema_version"`
+	PoliciesSchemaVersion      string   `json:"policies_schema_version"`
+	AttachmentsSchemaVersion   string   `json:"attachments_schema_version"`
 }
 
 var (
@@ -45,6 +50,11 @@ func printVersion(writer io.Writer, output outputFormat) error {
 		Version:                    version,
 		OrganizationSchemaVersion:  organizationJSONSchemaVersion,
 		OrganizationSchemaVersions: []string{organizationJSONSchemaVersion, organizationPolicyDocumentsJSONSchemaVersion},
+		AuthStatusSchemaVersion:    authStatusJSONSchemaVersion,
+		ErrorSchemaVersion:         errorJSONSchemaVersion,
+		SearchSchemaVersion:        awsSearchJSONSchemaVersion,
+		PoliciesSchemaVersion:      policiesQuerySchemaVersion,
+		AttachmentsSchemaVersion:   attachmentsQuerySchemaVersion,
 	}
 	if output == json {
 		encoder := encodingjson.NewEncoder(writer)

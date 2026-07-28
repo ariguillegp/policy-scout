@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://policy-scout.dev/schemas/policies/v1",
+  "title": "Policy Scout focused policies-query result schema v1",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "target": { "$ref": "#/$defs/selectedTarget" },
+    "path": {
+      "type": "array",
+      "minItems": 2,
+      "prefixItems": [{ "$ref": "#/$defs/rootPathEntity" }],
+      "items": { "$ref": "#/$defs/targetPathEntity" }
+    },
+    "policies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/policyAttachment" }
+    }
+  },
+  "required": ["schema_version", "target", "path", "policies"],
+  "$defs": {
+    "rootPathEntity": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "root" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" }
+      },
+      "required": ["type", "id"]
+    },
+    "targetPathEntity": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["organizational_unit", "account"] },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 }
+      },
+      "required": ["type", "id", "name"]
+    },
+    "entity": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["root", "organizational_unit", "account"] },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" }
+      },
+      "required": ["type", "id"]
+    },
+    "organizationalUnitTarget": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "organizational_unit" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "scp_applicable": { "const": true }
+      },
+      "required": ["type", "id", "name", "scp_applicable"],
+      "not": { "required": ["management_account"] }
+    },
+    "memberAccountTarget": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "account" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "management_account": { "const": false },
+        "scp_applicable": { "const": true }
+      },
+      "required": ["type", "id", "name", "management_account", "scp_applicable"]
+    },
+    "managementAccountTarget": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "account" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "management_account": { "const": true },
+        "scp_applicable": { "const": false }
+      },
+      "required": ["type", "id", "name", "management_account", "scp_applicable"]
+    },
+    "selectedTarget": {
+      "oneOf": [
+        { "$ref": "#/$defs/organizationalUnitTarget" },
+        { "$ref": "#/$defs/memberAccountTarget" },
+        { "$ref": "#/$defs/managementAccountTarget" }
+      ]
+    },
+    "policyAttachment": {
+      "type": "object",
+      "properties": {
+        "policy_id": { "type": "string", "minLength": 1 },
+        "policy_name": { "type": "string" },
+        "attached_to": { "$ref": "#/$defs/entity" },
+        "inherited": { "type": "boolean" }
+      },
+      "required": ["policy_id", "policy_name", "attached_to", "inherited"]
+    }
+  }
+}
