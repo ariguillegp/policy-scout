@@ -20,8 +20,8 @@ Root [r-cww9]
 ```
 
 > [!IMPORTANT]
-> Policy Scout lists names from SCP summaries. It does not retrieve policy
-> documents or evaluate SCP Allow/Deny semantics, IAM policies, resource
+> Policy Scout lists names from SCP summaries and can optionally retrieve SCP
+> documents. It does not evaluate SCP Allow/Deny semantics, IAM policies, resource
 > policies, permission boundaries, session policies, or effective permissions.
 
 ## Features
@@ -31,6 +31,7 @@ Root [r-cww9]
 - Distinguish direct SCP attachments from attachments inherited through ancestors.
 - Identify the management account, whose users and roles are not affected by SCPs.
 - Produce a terminal-friendly tree or stable, structured JSON for automation.
+- Optionally include each unique applicable SCP document once in structured JSON.
 
 ## Installation
 
@@ -105,6 +106,15 @@ JSON is the default output format. Use it explicitly in scripts:
 policy-scout aws --account-id all --output-format json > organization.json
 ```
 
+Retrieve the unique applicable SCP documents when they are needed:
+
+```bash
+policy-scout aws --account-id all --include-policy-documents --output-format json
+```
+
+This opt-in output uses organization schema v2. Without the flag, Policy Scout
+does not call `DescribePolicy` and continues to emit schema v1 exactly as before.
+
 For an AWS IAM Identity Center (SSO) profile, authenticate first and pass the
 profile explicitly:
 
@@ -132,6 +142,9 @@ policy-scout aws --account-id all
 # Bound AWS work in CI or another automated environment
 policy-scout aws --account-id all --timeout 30s --max-retries 3
 
+# Include a deduplicated catalog of parsed SCP documents (JSON only)
+policy-scout aws --account-id all --include-policy-documents --output-format json
+
 # Discover the binary and organization JSON schema versions
 policy-scout version
 policy-scout version --output-format json
@@ -158,6 +171,7 @@ requested:
 - `organizations:DescribeOrganization` for an account or the entire organization
 - `organizations:ListParents`
 - `organizations:ListPoliciesForTarget`
+- `organizations:DescribePolicy` only with `--include-policy-documents`
 
 `aws search` only needs `ListRoots`, `ListChildren`, and the applicable
 `DescribeAccount`/`DescribeOrganizationalUnit` permissions. It does not list

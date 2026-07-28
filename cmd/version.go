@@ -15,8 +15,9 @@ import (
 var version = "dev"
 
 type versionInfo struct {
-	Version                   string `json:"version"`
-	OrganizationSchemaVersion string `json:"organization_schema_version"`
+	Version                    string   `json:"version"`
+	OrganizationSchemaVersion  string   `json:"organization_schema_version"`
+	OrganizationSchemaVersions []string `json:"organization_schema_versions"`
 }
 
 var (
@@ -41,8 +42,9 @@ func init() {
 
 func printVersion(writer io.Writer, output outputFormat) error {
 	info := versionInfo{
-		Version:                   version,
-		OrganizationSchemaVersion: organizationJSONSchemaVersion,
+		Version:                    version,
+		OrganizationSchemaVersion:  organizationJSONSchemaVersion,
+		OrganizationSchemaVersions: []string{organizationJSONSchemaVersion, organizationPolicyDocumentsJSONSchemaVersion},
 	}
 	if output == json {
 		encoder := encodingjson.NewEncoder(writer)

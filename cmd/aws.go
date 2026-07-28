@@ -38,8 +38,11 @@ const (
 	organizationInspectionConcurrency int    = 4
 )
 
-// organizationJSONSchemaVersion identifies the compatibility contract for AWS organization JSON output.
-const organizationJSONSchemaVersion = "1"
+// Organization schema v1 is the default contract. Schema v2 adds the opt-in policy catalog.
+const (
+	organizationJSONSchemaVersion                = "1"
+	organizationPolicyDocumentsJSONSchemaVersion = "2"
+)
 
 const (
 	rootEntityType               = "root"
@@ -92,6 +95,7 @@ type organizationsClient interface {
 	DescribeAccount(context.Context, *organizations.DescribeAccountInput, ...func(*organizations.Options)) (*organizations.DescribeAccountOutput, error)
 	DescribeOrganizationalUnit(context.Context, *organizations.DescribeOrganizationalUnitInput, ...func(*organizations.Options)) (*organizations.DescribeOrganizationalUnitOutput, error)
 	DescribeOrganization(context.Context, *organizations.DescribeOrganizationInput, ...func(*organizations.Options)) (*organizations.DescribeOrganizationOutput, error)
+	DescribePolicy(context.Context, *organizations.DescribePolicyInput, ...func(*organizations.Options)) (*organizations.DescribePolicyOutput, error)
 }
 
 type accountDescriber interface {
@@ -111,12 +115,13 @@ type authStatusOrganizationsClient interface {
 }
 
 var (
-	accountID            string
-	organizationalUnitID string
-	format               outputFormat = json
-	profile              string
-	authStatusFormat     outputFormat = json
-	awsCmd                            = &cobra.Command{
+	accountID              string
+	organizationalUnitID   string
+	includePolicyDocuments bool
+	format                 outputFormat = json
+	profile                string
+	authStatusFormat       outputFormat = json
+	awsCmd                              = &cobra.Command{
 		Use:   "aws (--account-id <12-digit-id|all> | --ou-id <ou-id>)",
 		Short: "Show AWS paths and localized SCP attachments for OUs and accounts",
 		Long: `Show the AWS Organizations hierarchy and names from service control
@@ -126,8 +131,9 @@ ancestors. Inspect one account or OU path, or the entire organization.
 
 JSON output is used by default.
 
-Policy Scout does not retrieve policy documents or evaluate SCP Allow/Deny
-semantics, IAM policies, resource policies, permission boundaries,
+Use --include-policy-documents with JSON output to retrieve each unique
+applicable SCP once in a top-level policy catalog. Policy Scout does not
+evaluate SCP Allow/Deny semantics, IAM policies, resource policies, permission boundaries,
 session policies, or effective identity permissions.
 
 Credentials and region configuration are loaded from the AWS SDK default
@@ -143,6 +149,7 @@ AWS SSO login. If SSO credentials are missing or expired, run the suggested
   policy-scout aws --profile security-audit --account-id 123456789012
   policy-scout aws --account-id 123456789012 --output-format json
   policy-scout aws --account-id 123456789012 --timeout 30s --max-retries 3
+  policy-scout aws --account-id 123456789012 --include-policy-documents --output-format json
   policy-scout aws --account-id all --output-format json > organization.json
   policy-scout aws --account-id all --output-format text`,
 		Args: noArgsValidator,
@@ -184,6 +191,7 @@ func init() {
 
 	awsCmd.Flags().StringVar(&accountID, "account-id", "", `AWS account ID to inspect (exactly 12 digits), or "all" for the entire organization`)
 	awsCmd.Flags().StringVar(&organizationalUnitID, "ou-id", "", "AWS organizational unit ID to inspect")
+	awsCmd.Flags().BoolVar(&includePolicyDocuments, "include-policy-documents", false, "include a deduplicated SCP document catalog in JSON output (requires organizations:DescribePolicy)")
 
 	awsCmd.Flags().VarP(&format, "output-format", "o", `output format: "json" or "text"`)
 	if err := awsCmd.RegisterFlagCompletionFunc("output-format", outputFormatCompletion); err != nil {
@@ -296,7 +304,10 @@ func runAWSCommand(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	err = describeTarget(ctx, cmd.OutOrStdout(), targetID, profile, controls.configLoadOptions()...)
+	if includePolicyDocuments && format != json {
+		return newInvalidInvocationError(errors.New("--include-policy-documents requires --output-format json"))
+	}
+	err = describeTargetWithPolicyDocuments(ctx, cmd.OutOrStdout(), targetID, profile, includePolicyDocuments, controls.configLoadOptions()...)
 	return controls.explainError(err)
 }
 
@@ -542,6 +553,16 @@ func describeTarget(
 	targetID, selectedProfile string,
 	configOptions ...func(*config.LoadOptions) error,
 ) (err error) {
+	return describeTargetWithPolicyDocuments(ctx, writer, targetID, selectedProfile, false, configOptions...)
+}
+
+func describeTargetWithPolicyDocuments(
+	ctx context.Context,
+	writer io.Writer,
+	targetID, selectedProfile string,
+	includeDocuments bool,
+	configOptions ...func(*config.LoadOptions) error,
+) (err error) {
 	defer func() {
 		err = addSSORemediation(err, selectedProfile)
 	}()
@@ -560,7 +581,7 @@ func describeTarget(
 		return fmt.Errorf("get organization root ID: %w", err)
 	}
 
-	return inspectOrganizationTarget(ctx, writer, client, targetID, rootID, rootName, format)
+	return inspectOrganizationTargetWithPolicyDocuments(ctx, writer, client, targetID, rootID, rootName, format, includeDocuments)
 }
 
 type scpAttachmentTarget struct {
@@ -655,6 +676,16 @@ type organizationNode struct {
 	SCPs              []string              `json:"scps,omitempty"`
 	SCPAttachments    []scpAttachment       `json:"scp_attachments,omitempty"`
 	Children          []organizationNode    `json:"children,omitempty"`
+	Policies          []organizationPolicy  `json:"policies,omitempty"`
+}
+
+type organizationPolicy struct {
+	ID          string                  `json:"id"`
+	Name        string                  `json:"name"`
+	Description string                  `json:"description,omitempty"`
+	ARN         string                  `json:"arn,omitempty"`
+	AWSManaged  bool                    `json:"aws_managed"`
+	Content     encodingjson.RawMessage `json:"content"`
 }
 
 type organizationJSONSelection struct {
@@ -675,6 +706,7 @@ type organizationJSONNode struct {
 	SCPs              *[]string                  `json:"scps,omitempty"`
 	SCPAttachments    *[]scpAttachment           `json:"scp_attachments,omitempty"`
 	Children          *[]organizationJSONNode    `json:"children,omitempty"`
+	Policies          *[]organizationPolicy      `json:"policies,omitempty"`
 }
 
 type organizationCache struct {
@@ -760,12 +792,127 @@ func displayOrganizationTree(
 	client organizationsClient,
 	targetAccountID, rootID, rootName, managementAccountID string,
 	outputFormat outputFormat,
+	includePolicyDocuments ...bool,
 ) error {
 	root, err := buildOrganizationTree(ctx, client, targetAccountID, rootID, rootName, managementAccountID)
 	if err != nil {
 		return err
 	}
+	if len(includePolicyDocuments) > 0 && includePolicyDocuments[0] {
+		root.Policies, err = describeApplicablePolicies(ctx, client, root)
+		if err != nil {
+			return err
+		}
+		root.SchemaVersion = organizationPolicyDocumentsJSONSchemaVersion
+	}
 	return writeOrganizationTree(writer, root, outputFormat)
+}
+
+func describeApplicablePolicies(
+	ctx context.Context,
+	client organizationsClient,
+	root organizationNode,
+) ([]organizationPolicy, error) {
+	namesByID := make(map[string]string)
+	if err := collectPolicyAttachments(root, namesByID); err != nil {
+		return nil, err
+	}
+	policyIDs := make([]string, 0, len(namesByID))
+	for policyID := range namesByID {
+		policyIDs = append(policyIDs, policyID)
+	}
+	sort.Strings(policyIDs)
+
+	policies := make([]organizationPolicy, len(policyIDs))
+	err := runOrganizationJobs(ctx, len(policyIDs), func(jobCtx context.Context, index int) error {
+		policy, err := describePolicy(jobCtx, client, policyIDs[index])
+		if err != nil {
+			return fmt.Errorf("describe policy %s: %w", policyIDs[index], err)
+		}
+		if policy.Name != namesByID[policy.ID] {
+			return fmt.Errorf(
+				"DescribePolicy returned name %q for policy %s, but attachment discovery returned %q",
+				policy.Name,
+				policy.ID,
+				namesByID[policy.ID],
+			)
+		}
+		policies[index] = policy
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return policies, nil
+}
+
+func collectPolicyAttachments(node organizationNode, namesByID map[string]string) error {
+	for _, attachment := range node.SCPAttachments {
+		if name, found := namesByID[attachment.PolicyID]; found && name != attachment.PolicyName {
+			return fmt.Errorf(
+				"SCP %s has conflicting names %q and %q",
+				attachment.PolicyID,
+				name,
+				attachment.PolicyName,
+			)
+		}
+		namesByID[attachment.PolicyID] = attachment.PolicyName
+	}
+	for _, child := range node.Children {
+		if err := collectPolicyAttachments(child, namesByID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func describePolicy(
+	ctx context.Context,
+	client organizationsClient,
+	policyID string,
+) (organizationPolicy, error) {
+	result, err := client.DescribePolicy(ctx, &organizations.DescribePolicyInput{PolicyId: &policyID})
+	if err != nil {
+		return organizationPolicy{}, err
+	}
+	if result == nil || result.Policy == nil || result.Policy.PolicySummary == nil {
+		return organizationPolicy{}, errors.New("AWS returned no policy details")
+	}
+	summary := result.Policy.PolicySummary
+	if aws.ToString(summary.Id) != policyID {
+		return organizationPolicy{}, fmt.Errorf(
+			"AWS returned policy ID %q for requested policy %s",
+			aws.ToString(summary.Id),
+			policyID,
+		)
+	}
+	if aws.ToString(summary.Name) == "" {
+		return organizationPolicy{}, fmt.Errorf("AWS returned no name for policy %s", policyID)
+	}
+	if summary.Type != types.PolicyTypeServiceControlPolicy {
+		return organizationPolicy{}, fmt.Errorf(
+			"AWS returned policy %s with type %s, expected SERVICE_CONTROL_POLICY",
+			policyID,
+			summary.Type,
+		)
+	}
+	if result.Policy.Content == nil || strings.TrimSpace(aws.ToString(result.Policy.Content)) == "" {
+		return organizationPolicy{}, fmt.Errorf("AWS returned no content for policy %s", policyID)
+	}
+	content := encodingjson.RawMessage(aws.ToString(result.Policy.Content))
+	var document map[string]encodingjson.RawMessage
+	if err := encodingjson.Unmarshal(content, &document); err != nil || document == nil {
+		return organizationPolicy{}, fmt.Errorf("AWS returned malformed JSON content for policy %s", policyID)
+	}
+
+	return organizationPolicy{
+		ID:          policyID,
+		Name:        aws.ToString(summary.Name),
+		Description: aws.ToString(summary.Description),
+		ARN:         aws.ToString(summary.Arn),
+		AWSManaged:  summary.AwsManaged,
+		Content:     content,
+	}, nil
 }
 
 func inspectOrganizationTarget(
@@ -775,6 +922,17 @@ func inspectOrganizationTarget(
 	targetID, rootID, rootName string,
 	outputFormat outputFormat,
 ) error {
+	return inspectOrganizationTargetWithPolicyDocuments(ctx, writer, client, targetID, rootID, rootName, outputFormat, false)
+}
+
+func inspectOrganizationTargetWithPolicyDocuments(
+	ctx context.Context,
+	writer io.Writer,
+	client organizationsClient,
+	targetID, rootID, rootName string,
+	outputFormat outputFormat,
+	includeDocuments bool,
+) error {
 	managementAccountID := ""
 	if !strings.HasPrefix(targetID, "ou-") {
 		var err error
@@ -783,7 +941,7 @@ func inspectOrganizationTarget(
 			return err
 		}
 	}
-	return displayOrganizationTree(ctx, writer, client, targetID, rootID, rootName, managementAccountID, outputFormat)
+	return displayOrganizationTree(ctx, writer, client, targetID, rootID, rootName, managementAccountID, outputFormat, includeDocuments)
 }
 
 func buildOrganizationTree(
@@ -1204,6 +1362,10 @@ func newOrganizationJSONNode(node organizationNode) organizationJSONNode {
 		children := newOrganizationJSONChildren(node.Children)
 		view.Selection = &selection
 		view.Children = &children
+		if node.SchemaVersion == organizationPolicyDocumentsJSONSchemaVersion {
+			policies := nonNilSlice(node.Policies)
+			view.Policies = &policies
+		}
 	case organizationalUnitEntityType:
 		scps := nonNilSlice(node.SCPs)
 		attachments := nonNilSlice(node.SCPAttachments)

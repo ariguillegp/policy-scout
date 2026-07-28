@@ -99,12 +99,18 @@ root's required `selection` object identifies the request that produced it:
 }
 ```
 
+The default output is schema v1. With `--include-policy-documents`, the same
+hierarchy and attachment records are emitted as schema v2 and the root also has
+a required `policies` catalog. Calls without the flag remain byte-compatible
+with schema v1.
+
 ## Field presence
 
 | Field | Root | Organizational unit | Member account | Management account |
 | --- | --- | --- | --- | --- |
-| `schema_version` | required (`"1"`) | omitted | omitted | omitted |
+| `schema_version` | required (`"1"` by default; `"2"` with policy documents) | omitted | omitted | omitted |
 | `selection` | required | omitted | omitted | omitted |
+| `policies` | required array in schema v2; omitted in v1 | omitted | omitted | omitted |
 | `type` | required (`root`) | required (`organizational_unit`) | required (`account`) | required (`account`) |
 | `id` | required | required | required | required |
 | `name` | present when AWS returns it | required | required | required |
@@ -137,6 +143,45 @@ attachment position from root to reported entity.
 
 For the entire organization, children are deterministic: accounts come before
 OUs under each parent, and each category is sorted by AWS entity ID.
+
+## Schema v2 policy catalog
+
+`--include-policy-documents` is available with JSON output and adds a top-level
+`policies` array. It contains each unique policy referenced by applicable
+attachments exactly once, sorted by policy ID. An inspection with no applicable
+policies emits `"policies": []`.
+
+```json
+{
+  "schema_version": "2",
+  "selection": {"type": "account", "target_id": "339712974046"},
+  "type": "root",
+  "id": "r-cww9",
+  "policies": [
+    {
+      "id": "p-e5f6g7h8",
+      "name": "DenyRegions",
+      "description": "Deny access outside approved regions",
+      "arn": "arn:aws:organizations::123456789012:policy/o-example/service_control_policy/p-e5f6g7h8",
+      "aws_managed": false,
+      "content": {
+        "Version": "2012-10-17",
+        "Statement": [{"Effect": "Deny", "Action": "*", "Resource": "*"}]
+      }
+    }
+  ],
+  "children": []
+}
+```
+
+Each catalog item preserves the ID, name, description, ARN, and AWS-managed
+status returned by `DescribePolicy`. `description` and `arn` are omitted when
+AWS omits them. `content` is parsed and emitted as a JSON object, never as an
+escaped JSON string. Malformed or missing policy details fail the entire
+inspection; Policy Scout does not emit partial output.
+
+The catalog reports documents and attachment provenance only. It does not
+evaluate SCP semantics or effective IAM permissions.
 
 ## Empty and management-account nodes
 
@@ -182,13 +227,16 @@ policy-scout version --output-format json
 ```json
 {
   "version": "1.13.0",
-  "organization_schema_version": "1"
+  "organization_schema_version": "1",
+  "organization_schema_versions": ["1", "2"]
 }
 ```
 
 Release binaries report their release version; direct builds and `go install`
-binaries report `dev`. The root-level `schema_version` matches
-`organization_schema_version`.
+binaries report `dev`. `organization_schema_version` identifies the default
+schema emitted without opt-in features. `organization_schema_versions` lists
+every supported organization contract. The root-level `schema_version` is
+`"1"` by default and `"2"` when policy documents are included.
 
 Within one schema version, consumers must tolerate additive object fields and
 should use `type` rather than assume every node has identical fields. Removing
@@ -199,7 +247,8 @@ Organization JSON remains two-space indented and newline-terminated. Consumers
 should parse JSON rather than use whitespace as a delimiter.
 
 Policy Scout does not currently publish a formal JSON Schema. The field-presence
-table above is the producer contract for schema v1.
+table above is the producer contract for the hierarchy shared by schemas v1 and
+v2; the policy-catalog section defines the v2 addition.
 
 ## AWS entity search JSON contract
 

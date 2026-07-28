@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	encodingjson "encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -29,6 +30,10 @@ func TestVersionJSON(t *testing.T) {
 			result.OrganizationSchemaVersion,
 			organizationJSONSchemaVersion,
 		)
+	}
+	wantVersions := []string{organizationJSONSchemaVersion, organizationPolicyDocumentsJSONSchemaVersion}
+	if !reflect.DeepEqual(result.OrganizationSchemaVersions, wantVersions) {
+		t.Fatalf("organization schema versions are %v, want %v", result.OrganizationSchemaVersions, wantVersions)
 	}
 }
 

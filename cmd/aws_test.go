@@ -61,6 +61,7 @@ type fakeOrganizationsClient struct {
 	describeAccountFn          func(context.Context, *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error)
 	describeOrganizationalUnit func(context.Context, *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error)
 	describeOrganizationFn     func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error)
+	describePolicyFn           func(context.Context, *organizations.DescribePolicyInput) (*organizations.DescribePolicyOutput, error)
 }
 
 func (fake *fakeOrganizationsClient) ListChildren(
@@ -138,6 +139,171 @@ func (fake *fakeOrganizationsClient) DescribeOrganization(
 		return &organizations.DescribeOrganizationOutput{}, nil
 	}
 	return fake.describeOrganizationFn(ctx, input)
+}
+
+func (fake *fakeOrganizationsClient) DescribePolicy(
+	ctx context.Context,
+	input *organizations.DescribePolicyInput,
+	_ ...func(*organizations.Options),
+) (*organizations.DescribePolicyOutput, error) {
+	if fake.describePolicyFn == nil {
+		return nil, errors.New("unexpected DescribePolicy call")
+	}
+	return fake.describePolicyFn(ctx, input)
+}
+
+func TestPolicyDocumentCatalogIsDeduplicatedParsedAndDeterministic(t *testing.T) {
+	t.Parallel()
+
+	root := organizationNode{
+		SchemaVersion: organizationJSONSchemaVersion,
+		Selection:     organizationSelection{Type: allSelectionType},
+		Type:          rootEntityType,
+		ID:            "r-root",
+		Children: []organizationNode{
+			{Type: accountEntityType, ID: "111111111111", SCPAttachments: []scpAttachment{
+				{PolicyID: "p-zzzzzzzz", PolicyName: "Zulu"},
+				{PolicyID: "p-aaaaaaaa", PolicyName: "Alpha"},
+			}},
+			{Type: organizationalUnitEntityType, ID: "ou-root-12345678", SCPAttachments: []scpAttachment{
+				{PolicyID: "p-aaaaaaaa", PolicyName: "Alpha"},
+			}},
+		},
+	}
+	var mu sync.Mutex
+	calls := make(map[string]int)
+	client := &fakeOrganizationsClient{describePolicyFn: func(
+		_ context.Context,
+		input *organizations.DescribePolicyInput,
+	) (*organizations.DescribePolicyOutput, error) {
+		policyID := aws.ToString(input.PolicyId)
+		mu.Lock()
+		calls[policyID]++
+		mu.Unlock()
+		name := map[string]string{"p-aaaaaaaa": "Alpha", "p-zzzzzzzz": "Zulu"}[policyID]
+		content := `{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"*","Resource":"*"}]}`
+		return &organizations.DescribePolicyOutput{Policy: &types.Policy{
+			Content: aws.String(content),
+			PolicySummary: &types.PolicySummary{
+				Id: aws.String(policyID), Name: aws.String(name), Description: aws.String(name + " description"),
+				Arn: aws.String("arn:aws:organizations::aws:policy/" + policyID), AwsManaged: policyID == "p-zzzzzzzz",
+				Type: types.PolicyTypeServiceControlPolicy,
+			},
+		}}, nil
+	}}
+
+	policies, err := describeApplicablePolicies(context.Background(), client, root)
+	if err != nil {
+		t.Fatalf("describe applicable policies: %v", err)
+	}
+	root.SchemaVersion = organizationPolicyDocumentsJSONSchemaVersion
+	root.Policies = policies
+	output, err := renderOrganizationTreeJSON(root)
+	if err != nil {
+		t.Fatalf("render policy catalog: %v", err)
+	}
+	if len(policies) != 2 || policies[0].ID != "p-aaaaaaaa" || policies[1].ID != "p-zzzzzzzz" {
+		t.Fatalf("policies are not sorted and deduplicated: %+v", policies)
+	}
+	if calls["p-aaaaaaaa"] != 1 || calls["p-zzzzzzzz"] != 1 {
+		t.Fatalf("DescribePolicy calls = %v, want one per policy ID", calls)
+	}
+	var decoded struct {
+		SchemaVersion string `json:"schema_version"`
+		Policies      []struct {
+			Content any `json:"content"`
+		} `json:"policies"`
+	}
+	if err := encodingjson.Unmarshal(output, &decoded); err != nil {
+		t.Fatalf("decode catalog JSON: %v", err)
+	}
+	if decoded.SchemaVersion != "2" || len(decoded.Policies) != 2 {
+		t.Fatalf("unexpected schema/catalog: %+v", decoded)
+	}
+	if _, ok := decoded.Policies[0].Content.(map[string]any); !ok {
+		t.Fatalf("policy content has type %T, want JSON object", decoded.Policies[0].Content)
+	}
+}
+
+func TestMalformedPolicyContentProducesNoPartialOutput(t *testing.T) {
+	t.Parallel()
+
+	for name, content := range map[string]string{
+		"invalid JSON":   `{"Statement":`,
+		"null":           `null`,
+		"array":          `[]`,
+		"number":         `42`,
+		"encoded string": `"{}"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var output bytes.Buffer
+			err := displayOrganizationTree(
+				context.Background(), &output, newPolicyDocumentTestClient(content),
+				"all", "r-root", "Root", "999999999999", json, true,
+			)
+			if err == nil || !strings.Contains(err.Error(), "malformed JSON content") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if output.Len() != 0 {
+				t.Fatalf("stdout contains partial output: %q", output.String())
+			}
+		})
+	}
+}
+
+func newPolicyDocumentTestClient(content string) *fakeOrganizationsClient {
+	const accountID = "123456789012"
+	return &fakeOrganizationsClient{
+		listChildrenFn: func(_ context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+			if input.ChildType == types.ChildTypeAccount {
+				return &organizations.ListChildrenOutput{Children: []types.Child{{Id: aws.String(accountID), Type: types.ChildTypeAccount}}}, nil
+			}
+			return &organizations.ListChildrenOutput{}, nil
+		},
+		describeAccountFn: func(context.Context, *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+			return &organizations.DescribeAccountOutput{Account: &types.Account{Id: aws.String(accountID), Name: aws.String("Application")}}, nil
+		},
+		listPoliciesForTargetFn: func(_ context.Context, input *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			if aws.ToString(input.TargetId) == "r-root" {
+				return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{{
+					Id: aws.String("p-aaaaaaaa"), Name: aws.String("Broken"), Type: types.PolicyTypeServiceControlPolicy,
+				}}}, nil
+			}
+			return &organizations.ListPoliciesForTargetOutput{}, nil
+		},
+		describePolicyFn: func(context.Context, *organizations.DescribePolicyInput) (*organizations.DescribePolicyOutput, error) {
+			return &organizations.DescribePolicyOutput{Policy: &types.Policy{
+				Content: aws.String(content),
+				PolicySummary: &types.PolicySummary{
+					Id: aws.String("p-aaaaaaaa"), Name: aws.String("Broken"), Type: types.PolicyTypeServiceControlPolicy,
+				},
+			}}, nil
+		},
+	}
+}
+
+func TestDefaultOrganizationOutputDoesNotDescribePolicies(t *testing.T) {
+	t.Parallel()
+
+	describeCalls := 0
+	client := newPolicyDocumentTestClient(`{"Statement":[]}`)
+	client.describePolicyFn = func(context.Context, *organizations.DescribePolicyInput) (*organizations.DescribePolicyOutput, error) {
+		describeCalls++
+		return nil, errors.New("DescribePolicy must not be called by default")
+	}
+	var output bytes.Buffer
+	if err := displayOrganizationTree(
+		context.Background(), &output, client, "all", "r-root", "Root", "999999999999", json,
+	); err != nil {
+		t.Fatalf("display default organization: %v", err)
+	}
+	if describeCalls != 0 {
+		t.Fatalf("DescribePolicy called %d times by default", describeCalls)
+	}
+	if strings.Contains(output.String(), "\"policies\"") || !strings.Contains(output.String(), `"schema_version": "1"`) {
+		t.Fatalf("default schema changed:\n%s", output.String())
+	}
 }
 
 func TestValidateAccountID(t *testing.T) {
@@ -558,7 +724,8 @@ func TestCommandContractIsAutomationFriendly(t *testing.T) {
 		"aws sso login --profile=<name>",
 		"every OU and member account",
 		"direct attachments and attachments inherited",
-		"does not retrieve policy documents",
+		"--include-policy-documents",
+		"top-level policy catalog",
 		"SCP Allow/Deny",
 		"IAM policies",
 		"resource policies",

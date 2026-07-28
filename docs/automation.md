@@ -9,8 +9,9 @@ browser authentication, or colored output.
 1. Make AWS credentials available through the default credential chain.
 2. Use `--output-format json` explicitly.
 3. Set `--timeout` and, when appropriate, `--max-retries`.
-4. Check the exit status before parsing organization traversal output.
-5. Use `--error-format json` when stderr will be parsed by software.
+4. Add `--include-policy-documents` only when full SCP content is required.
+5. Check the exit status before parsing organization traversal output.
+6. Use `--error-format json` when stderr will be parsed by software.
 
 ```bash
 policy-scout --error-format json aws --account-id all \
@@ -61,6 +62,13 @@ fi
 
 The [organization JSON contract](output.md) documents field presence, ordering,
 and schema compatibility, including the separate AWS entity search document.
+
+`--include-policy-documents` is JSON-only. It adds one `DescribePolicy` request
+per unique applicable policy ID, uses schema v2, and requires
+`organizations:DescribePolicy`. Without it, there are no `DescribePolicy`
+requests, no additional permission or AWS cost, and output remains schema v1.
+As with discovery failures, a policy retrieval or JSON-decoding failure leaves
+stdout empty.
 
 ## Structured errors
 

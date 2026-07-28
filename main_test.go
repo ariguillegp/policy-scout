@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -85,6 +86,7 @@ func TestAWSSubcommandHelpIsPublicAndAWSFree(t *testing.T) {
 		"Usage:\n  policy-scout aws (--account-id <12-digit-id|all> | --ou-id <ou-id>) [flags]",
 		"--account-id",
 		"--ou-id",
+		"--include-policy-documents",
 		"--output-format",
 		"--profile",
 		"--timeout",
@@ -193,14 +195,16 @@ func TestVersionTextAndJSON(t *testing.T) {
 		assertSuccessfulProcess(t, result, "JSON version")
 
 		var info struct {
-			Version                   string `json:"version"`
-			OrganizationSchemaVersion string `json:"organization_schema_version"`
+			Version                    string   `json:"version"`
+			OrganizationSchemaVersion  string   `json:"organization_schema_version"`
+			OrganizationSchemaVersions []string `json:"organization_schema_versions"`
 		}
 		if err := json.Unmarshal([]byte(result.stdout), &info); err != nil {
 			t.Fatalf("stdout is not version JSON: %q: %v", result.stdout, err)
 		}
-		if info.Version != contractTestVersion || info.OrganizationSchemaVersion != "1" {
-			t.Fatalf("version JSON = %#v, want version %q and organization schema version 1", info, contractTestVersion)
+		if info.Version != contractTestVersion || info.OrganizationSchemaVersion != "1" ||
+			!reflect.DeepEqual(info.OrganizationSchemaVersions, []string{"1", "2"}) {
+			t.Fatalf("version JSON = %#v, want version %q, default schema 1, and supported schemas [1 2]", info, contractTestVersion)
 		}
 	})
 }
