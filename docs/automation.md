@@ -18,6 +18,23 @@ policy-scout --error-format json aws --account-id all \
   > organization.json 2> policy-scout-error.json
 ```
 
+To resolve a human request such as “inspect production” without first writing
+and parsing a complete organization inspection, search by exact name and then
+require the caller to choose an ID if multiple matches are returned:
+
+```bash
+policy-scout --error-format json aws search --name production \
+  --output-format json --timeout 30s --max-retries 3 \
+  > matches.json 2> policy-scout-error.json
+```
+
+Search is case-sensitive and returns all exact account and OU matches with
+structured root-to-entity paths. Use `--type account` or
+`--type organizational_unit` when the requested entity kind is known. Exit
+status `0` with `"matches": []` means the search completed and found nothing;
+it is not an error. Agents must not silently select one item when multiple
+matches are returned.
+
 For ordinary organization traversal, exit status `0` means stdout contains one
 JSON document. A nonzero status means the operation failed and stderr contains a
 diagnostic.
@@ -43,7 +60,7 @@ fi
 ```
 
 The [organization JSON contract](output.md) documents field presence, ordering,
-and schema compatibility.
+and schema compatibility, including the separate AWS entity search document.
 
 ## Structured errors
 

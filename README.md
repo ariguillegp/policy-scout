@@ -80,13 +80,20 @@ Configure AWS credentials before running it.
    policy-scout aws auth status --output-format text
    ```
 
-2. Inspect an account and display its path and SCP attachments:
+2. Find every account or OU named `production` without parsing a full
+   organization inspection:
+
+   ```bash
+   policy-scout aws search --name production
+   ```
+
+3. Inspect a returned account ID and display its path and SCP attachments:
 
    ```bash
    policy-scout aws --account-id 339712974046 --output-format text
    ```
 
-3. Inspect an organizational unit instead:
+4. Inspect an organizational unit instead:
 
    ```bash
    policy-scout aws --ou-id ou-cww9-x2atbcle --output-format text
@@ -112,6 +119,11 @@ credentials, changes environment variables, or stores credentials.
 ## Common commands
 
 ```bash
+# Find exact-name matches; duplicate names are all returned with distinct paths
+policy-scout aws search --name production
+policy-scout aws search --name production --type account
+policy-scout aws search --name production --type organizational_unit
+
 # Inspect an account, an OU, or the entire organization
 policy-scout aws --account-id 339712974046
 policy-scout aws --ou-id ou-cww9-x2atbcle
@@ -130,7 +142,9 @@ and API calls. `--max-retries` limits retries after each request's initial
 attempt; accepted values are `0` through `10`. When omitted, Policy Scout keeps
 the AWS SDK or shared-configuration defaults.
 
-Run `policy-scout aws --help` for all flags and copyable examples.
+Name search is exact and case-sensitive. It succeeds with an explicit empty
+`matches` array when nothing matches, and never chooses among duplicate names.
+Run `policy-scout aws search --help` for its complete contract and examples.
 
 ## Required AWS permissions
 
@@ -138,12 +152,16 @@ The selected identity needs the following permissions, depending on the scope
 requested:
 
 - `organizations:ListRoots`
+- `organizations:ListChildren` for name search or the entire organization
+- `organizations:DescribeAccount` for account search or account inspection
+- `organizations:DescribeOrganizationalUnit` for any traversal through OUs
 - `organizations:DescribeOrganization` for an account or the entire organization
-- `organizations:DescribeAccount`
-- `organizations:DescribeOrganizationalUnit`
 - `organizations:ListParents`
 - `organizations:ListPoliciesForTarget`
-- `organizations:ListChildren` for the entire organization
+
+`aws search` only needs `ListRoots`, `ListChildren`, and the applicable
+`DescribeAccount`/`DescribeOrganizationalUnit` permissions. It does not list
+policy attachments or retrieve policy documents.
 
 ## Documentation
 

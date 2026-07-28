@@ -89,6 +89,7 @@ func TestAWSSubcommandHelpIsPublicAndAWSFree(t *testing.T) {
 		"--profile",
 		"--timeout",
 		"Inspect AWS authentication",
+		"Find AWS accounts and OUs by exact name",
 	} {
 		if !strings.Contains(result.stdout, expected) {
 			t.Errorf("AWS help does not contain %q:\n%s", expected, result.stdout)
@@ -136,6 +137,14 @@ func TestInvalidInvocationsUseStderrAndStableExitStatuses(t *testing.T) {
 			name: "empty account ID and OU ID",
 			args: []string{"aws", "--account-id=", "--ou-id", "ou-abcd-12345678"}, wantStatus: 2,
 			wantCode: "invalid_invocation", wantMessagePart: "mutually exclusive",
+		},
+		{
+			name: "search missing name", args: []string{"aws", "search"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--name",
+		},
+		{
+			name: "search invalid type", args: []string{"aws", "search", "--name", "production", "--type", "root"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--type",
 		},
 		{
 			// Extra positional arguments to version are classified as invalid_invocation,

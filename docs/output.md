@@ -200,3 +200,68 @@ should parse JSON rather than use whitespace as a delimiter.
 
 Policy Scout does not currently publish a formal JSON Schema. The field-presence
 table above is the producer contract for schema v1.
+
+## AWS entity search JSON contract
+
+`policy-scout aws search --name <name>` returns a separate, versioned search
+document. Matching is exact and case-sensitive. The optional `--type account`
+or `--type organizational_unit` flag limits the entity type searched. Without
+it, both types are searched. Every duplicate-name match is returned; Policy
+Scout never resolves a name to one ID automatically.
+
+```json
+{
+  "schema_version": "1",
+  "query": {
+    "name": "production"
+  },
+  "matches": [
+    {
+      "type": "account",
+      "id": "222222222222",
+      "name": "production",
+      "path": [
+        {
+          "type": "root",
+          "id": "r-cww9",
+          "name": "Root"
+        },
+        {
+          "type": "organizational_unit",
+          "id": "ou-cww9-36h7ub42",
+          "name": "Production"
+        },
+        {
+          "type": "account",
+          "id": "222222222222",
+          "name": "production"
+        }
+      ]
+    }
+  ]
+}
+```
+
+The search schema v1 contract is:
+
+- `schema_version` is always the string `"1"`.
+- `query.name` is the exact requested name. `query.type` is present only when a
+  type filter was supplied.
+- `matches` is always an array, including `[]` when no entity matches.
+- Each match has `type`, `id`, `name`, and `path`. `type` is `account` or
+  `organizational_unit`.
+- `path` is an ordered array from the organization root through every ancestor
+  to the matched entity. Each path entity has `type`, `id`, and its AWS name
+  when AWS supplies one; root names can be absent.
+- Matches are deterministic: accounts precede organizational units, and each
+  type is sorted by ID. Child API pagination and response order do not affect
+  the document.
+
+Search JSON is two-space indented and newline-terminated. Within schema v1,
+consumers must tolerate additive object fields. The search schema version is
+independent of the organization inspection schema version reported by
+`policy-scout version`.
+
+Text search output is available with `--output-format text`. It contains the
+same matches and paths but, like other text output, is intended for people and
+is not a stable automation interface.

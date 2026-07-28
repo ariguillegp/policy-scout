@@ -52,6 +52,7 @@ func TestAWSHelpDocumentsOutputFormatMetavarAndDefault(t *testing.T) {
 	for _, expected := range []string{
 		"JSON output is used by default",
 		"Inspect AWS authentication",
+		"Find AWS accounts and OUs by exact name",
 		"--output-format text|json",
 		`"json" or "text"`,
 		"(default json)",

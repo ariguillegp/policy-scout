@@ -94,6 +94,14 @@ type organizationsClient interface {
 	DescribeOrganization(context.Context, *organizations.DescribeOrganizationInput, ...func(*organizations.Options)) (*organizations.DescribeOrganizationOutput, error)
 }
 
+type accountDescriber interface {
+	DescribeAccount(context.Context, *organizations.DescribeAccountInput, ...func(*organizations.Options)) (*organizations.DescribeAccountOutput, error)
+}
+
+type organizationalUnitDescriber interface {
+	DescribeOrganizationalUnit(context.Context, *organizations.DescribeOrganizationalUnitInput, ...func(*organizations.Options)) (*organizations.DescribeOrganizationalUnitOutput, error)
+}
+
 type stsClient interface {
 	GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
 }
@@ -169,6 +177,7 @@ entire operation, including configuration and credential loading, and
 func init() {
 	rootCmd.AddCommand(awsCmd)
 	awsCmd.AddCommand(authCmd)
+	awsCmd.AddCommand(awsSearchCmd)
 	authCmd.AddCommand(authStatusCmd)
 
 	awsCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS shared-config profile to use (overrides AWS_PROFILE)")
@@ -1413,7 +1422,7 @@ func listChildren(ctx context.Context, client organizations.ListChildrenAPIClien
 	return children, nil
 }
 
-func getAccount(ctx context.Context, client organizationsClient, targetAccountID string) (*types.Account, error) {
+func getAccount(ctx context.Context, client accountDescriber, targetAccountID string) (*types.Account, error) {
 	result, err := client.DescribeAccount(ctx, &organizations.DescribeAccountInput{AccountId: &targetAccountID})
 	if err != nil {
 		return nil, err
@@ -1430,7 +1439,7 @@ func getAccount(ctx context.Context, client organizationsClient, targetAccountID
 	return result.Account, nil
 }
 
-func getOU(ctx context.Context, client organizationsClient, ouID string) (*types.OrganizationalUnit, error) {
+func getOU(ctx context.Context, client organizationalUnitDescriber, ouID string) (*types.OrganizationalUnit, error) {
 	result, err := client.DescribeOrganizationalUnit(ctx, &organizations.DescribeOrganizationalUnitInput{OrganizationalUnitId: &ouID})
 	if err != nil {
 		return nil, err

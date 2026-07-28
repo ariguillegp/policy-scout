@@ -33,6 +33,7 @@ var rootCmd = &cobra.Command{
 	Short: "Inspect cloud organization policies from one CLI",
 	Example: `  policy-scout aws auth status
   policy-scout aws auth status --output-format text
+  policy-scout aws search --name production
   policy-scout aws --account-id 123456789012
   policy-scout aws --account-id all --output-format text`,
 	SilenceErrors: true,
