@@ -12,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
-	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
 	"github.com/spf13/cobra"
 )
 
@@ -40,10 +39,8 @@ func (entityType *searchEntityType) Set(value string) error {
 func (entityType *searchEntityType) Type() string { return "account|organizational_unit" }
 
 type organizationSearchClient interface {
-	organizations.ListChildrenAPIClient
+	hierarchyListClient
 	organizations.ListRootsAPIClient
-	accountDescriber
-	organizationalUnitDescriber
 }
 
 type organizationSearchPathEntity struct {
@@ -68,6 +65,23 @@ type organizationSearchResult struct {
 	SchemaVersion string                    `json:"schema_version"`
 	Query         organizationSearchQuery   `json:"query"`
 	Matches       []organizationSearchMatch `json:"matches"`
+}
+
+type organizationSearchTask struct {
+	parentID   string
+	parentPath []organizationSearchPathEntity
+}
+
+type organizationSearchEntity struct {
+	id         string
+	entityType string
+	parentPath []organizationSearchPathEntity
+}
+
+type organizationSearchTaskResult struct {
+	matches  []organizationSearchMatch
+	entities []organizationSearchEntity
+	children []organizationSearchTask
 }
 
 var (
@@ -238,62 +252,89 @@ func discoverOrganizationChildren(
 	seen map[string]string,
 	matches *[]organizationSearchMatch,
 ) error {
-	if entityType != searchOrganizationalUnits {
-		accounts, err := listChildren(ctx, client, parentID, types.ChildTypeAccount)
-		if err != nil {
-			return fmt.Errorf("list accounts for %s: %w", parentID, err)
-		}
-		for _, child := range accounts {
-			accountID := aws.ToString(child.Id)
-			if err := recordSearchEntityPath(seen, accountID, parentPath); err != nil {
+	tasks := []organizationSearchTask{{parentID: parentID, parentPath: parentPath}}
+	for len(tasks) > 0 {
+		results := make([]organizationSearchTaskResult, len(tasks))
+		if err := runOrganizationJobs(ctx, len(tasks), func(jobCtx context.Context, index int) error {
+			result, err := runOrganizationSearchTask(jobCtx, client, tasks[index], name, entityType)
+			if err != nil {
 				return err
 			}
-			account, err := getAccount(ctx, client, accountID)
-			if err != nil {
-				return fmt.Errorf("describe account %s: %w", accountID, err)
+			results[index] = result
+			return nil
+		}); err != nil {
+			return err
+		}
+
+		tasks = nil
+		for _, result := range results {
+			for _, entity := range result.entities {
+				if entity.entityType == organizationalUnitEntityType {
+					if err := validateOrganizationalUnitForRoot(entity.id, parentPath[0].ID); err != nil {
+						return fmt.Errorf("AWS returned invalid organizational unit %s: %w", entity.id, err)
+					}
+				}
+				if err := recordSearchEntityPath(seen, entity.id, entity.parentPath); err != nil {
+					return err
+				}
 			}
+			*matches = append(*matches, result.matches...)
+			tasks = append(tasks, result.children...)
+		}
+	}
+	return nil
+}
+
+func runOrganizationSearchTask(
+	ctx context.Context,
+	client organizationSearchClient,
+	task organizationSearchTask,
+	name string,
+	entityType searchEntityType,
+) (organizationSearchTaskResult, error) {
+	result := organizationSearchTaskResult{}
+	if entityType != searchOrganizationalUnits {
+		accounts, err := listAccountsForParent(ctx, client, task.parentID)
+		if err != nil {
+			return result, fmt.Errorf("list accounts for %s: %w", task.parentID, err)
+		}
+		for _, account := range accounts {
+			accountID := aws.ToString(account.Id)
 			accountName := aws.ToString(account.Name)
+			result.entities = append(result.entities, organizationSearchEntity{
+				id: accountID, entityType: accountEntityType, parentPath: task.parentPath,
+			})
 			if accountName == name {
-				path := appendSearchPath(parentPath, organizationSearchPathEntity{
+				path := appendSearchPath(task.parentPath, organizationSearchPathEntity{
 					Type: accountEntityType, ID: accountID, Name: accountName,
 				})
-				*matches = append(*matches, organizationSearchMatch{
+				result.matches = append(result.matches, organizationSearchMatch{
 					Type: accountEntityType, ID: accountID, Name: accountName, Path: path,
 				})
 			}
 		}
 	}
-
-	organizationalUnits, err := listChildren(ctx, client, parentID, types.ChildTypeOrganizationalUnit)
+	organizationalUnits, err := listOrganizationalUnitsForParent(ctx, client, task.parentID)
 	if err != nil {
-		return fmt.Errorf("list organizational units for %s: %w", parentID, err)
+		return result, fmt.Errorf("list organizational units for %s: %w", task.parentID, err)
 	}
-	for _, child := range organizationalUnits {
-		ouID := aws.ToString(child.Id)
-		if err := validateOrganizationalUnitForRoot(ouID, parentPath[0].ID); err != nil {
-			return fmt.Errorf("AWS returned invalid organizational unit %s under %s: %w", ouID, parentID, err)
-		}
-		if err := recordSearchEntityPath(seen, ouID, parentPath); err != nil {
-			return err
-		}
-		organizationalUnit, err := getOU(ctx, client, ouID)
-		if err != nil {
-			return fmt.Errorf("describe organizational unit %s: %w", ouID, err)
-		}
-		ouName := aws.ToString(organizationalUnit.Name)
-		path := appendSearchPath(parentPath, organizationSearchPathEntity{
+	for _, ou := range organizationalUnits {
+		ouID := aws.ToString(ou.Id)
+		ouName := aws.ToString(ou.Name)
+		result.entities = append(result.entities, organizationSearchEntity{
+			id: ouID, entityType: organizationalUnitEntityType, parentPath: task.parentPath,
+		})
+		path := appendSearchPath(task.parentPath, organizationSearchPathEntity{
 			Type: organizationalUnitEntityType, ID: ouID, Name: ouName,
 		})
 		if entityType != searchAccounts && ouName == name {
-			*matches = append(*matches, organizationSearchMatch{
+			result.matches = append(result.matches, organizationSearchMatch{
 				Type: organizationalUnitEntityType, ID: ouID, Name: ouName, Path: path,
 			})
 		}
-		if err := discoverOrganizationChildren(ctx, client, ouID, path, name, entityType, seen, matches); err != nil {
-			return err
-		}
+		result.children = append(result.children, organizationSearchTask{parentID: ouID, parentPath: path})
 	}
-	return nil
+	return result, nil
 }
 
 func recordSearchEntityPath(seen map[string]string, entityID string, parentPath []organizationSearchPathEntity) error {

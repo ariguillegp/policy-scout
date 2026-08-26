@@ -8,6 +8,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -163,16 +164,9 @@ func runAWSQuery(
 		return newCredentialsError("RetrieveCredentials", err)
 	}
 	client := organizations.NewFromConfig(cfg)
-	rootID, rootName, err := getRoot(ctx, client)
+	rootID, rootName, managementAccountID, err := getRootAndManagementAccount(ctx, client, includeManagementAccount)
 	if err != nil {
-		return fmt.Errorf("get organization root ID: %w", err)
-	}
-	managementAccountID := ""
-	if includeManagementAccount {
-		managementAccountID, err = getManagementAccountID(ctx, client)
-		if err != nil {
-			return err
-		}
+		return err
 	}
 	return operation(ctx, writer, client, rootID, rootName, managementAccountID)
 }
@@ -276,20 +270,15 @@ func buildAttachmentsQuery(
 	}
 
 	collector := attachmentReachCollector{
-		ctx:                 ctx,
 		client:              client,
-		rootID:              rootID,
 		managementAccountID: managementAccountID,
 		directByID:          directByID,
 		affectedByID:        make(map[string]affectedTarget),
-		completed:           make(map[string]bool),
-		active:              make(map[string]bool),
 	}
+	var reachJobs []organizationTraversalJob
 	if rootAttachment, found := directByID[rootID]; found {
 		rootAttachment.Name = rootName
-		if err := collector.walk(rootAttachment, nil); err != nil {
-			return attachmentsQueryResult{}, err
-		}
+		reachJobs = append(reachJobs, collector.newJob(rootAttachment, nil, []string{rootID}))
 	} else {
 		ouPaths := make(map[string][]string)
 		for _, attachment := range directAttachments {
@@ -306,10 +295,11 @@ func buildAttachmentsQuery(
 			if attachment.Type != organizationalUnitEntityType || hasDirectOUAncestor(ouPaths[attachment.ID], directByID) {
 				continue
 			}
-			if err := collector.walk(attachment, nil); err != nil {
-				return attachmentsQueryResult{}, err
-			}
+			reachJobs = append(reachJobs, collector.newJob(attachment, nil, ouPaths[attachment.ID]))
 		}
+	}
+	if err := runOrganizationTraversal(ctx, reachJobs); err != nil {
+		return attachmentsQueryResult{}, err
 	}
 
 	for _, attachment := range directAttachments {
@@ -366,78 +356,77 @@ func queryTargetFromAttachmentTarget(target scpAttachmentTarget, managementAccou
 }
 
 type attachmentReachCollector struct {
-	ctx                 context.Context
 	client              organizationsClient
-	rootID              string
 	managementAccountID string
 	directByID          map[string]scpAttachmentTarget
 	affectedByID        map[string]affectedTarget
-	completed           map[string]bool
-	active              map[string]bool
+	mu                  sync.Mutex
 }
 
-func (collector *attachmentReachCollector) walk(current scpAttachmentTarget, inherited []scpAttachmentTarget) error {
-	if collector.active[current.ID] {
-		return fmt.Errorf("cycle detected in organization hierarchy at %s", current.ID)
-	}
-	if collector.completed[current.ID] {
-		return nil
-	}
-	collector.active[current.ID] = true
-	defer delete(collector.active, current.ID)
-
+func (collector *attachmentReachCollector) newJob(
+	current scpAttachmentTarget,
+	inherited []scpAttachmentTarget,
+	ancestors []string,
+) organizationTraversalJob {
 	sources := append([]scpAttachmentTarget(nil), inherited...)
 	if direct, found := collector.directByID[current.ID]; found {
 		sources = append(sources, direct)
 	}
-	if current.Type == organizationalUnitEntityType {
-		ou, err := getOU(collector.ctx, collector.client, current.ID)
-		if err != nil {
-			return fmt.Errorf("get organizational unit %s: %w", current.ID, err)
-		}
-		current.Name = aws.ToString(ou.Name)
-		collector.affectedByID[current.ID] = affectedTarget{
-			Target:     queryTargetFromAttachmentTarget(current, collector.managementAccountID),
-			Provenance: attachmentProvenanceForTarget(sources, current.ID),
-		}
-	}
+	return organizationTraversalJob{
+		id:        current.ID,
+		ancestors: ancestors,
+		run: func(ctx context.Context) ([]organizationTraversalJob, error) {
+			if current.Type == organizationalUnitEntityType {
+				collector.mu.Lock()
+				collector.affectedByID[current.ID] = affectedTarget{
+					Target:     queryTargetFromAttachmentTarget(current, collector.managementAccountID),
+					Provenance: attachmentProvenanceForTarget(sources, current.ID),
+				}
+				collector.mu.Unlock()
+			}
 
-	accounts, err := listChildren(collector.ctx, collector.client, current.ID, types.ChildTypeAccount)
-	if err != nil {
-		return fmt.Errorf("list accounts for %s: %w", current.ID, err)
-	}
-	for _, child := range accounts {
-		accountID := aws.ToString(child.Id)
-		if accountID == collector.managementAccountID {
-			continue
-		}
-		account, err := getAccount(collector.ctx, collector.client, accountID)
-		if err != nil {
-			return fmt.Errorf("get account %s: %w", accountID, err)
-		}
-		accountTarget := scpAttachmentTarget{Type: accountEntityType, ID: accountID, Name: aws.ToString(account.Name)}
-		accountSources := append([]scpAttachmentTarget(nil), sources...)
-		if direct, found := collector.directByID[accountID]; found {
-			accountSources = append(accountSources, direct)
-		}
-		collector.affectedByID[accountID] = affectedTarget{
-			Target:     queryTargetFromAttachmentTarget(accountTarget, collector.managementAccountID),
-			Provenance: attachmentProvenanceForTarget(accountSources, accountID),
-		}
-	}
+			accounts, err := listAccountsForParent(ctx, collector.client, current.ID)
+			if err != nil {
+				return nil, fmt.Errorf("list accounts for %s: %w", current.ID, err)
+			}
+			collector.mu.Lock()
+			for _, account := range accounts {
+				accountID := aws.ToString(account.Id)
+				if accountID == collector.managementAccountID {
+					continue
+				}
+				accountTarget := scpAttachmentTarget{
+					Type: accountEntityType, ID: accountID, Name: aws.ToString(account.Name),
+				}
+				accountSources := append([]scpAttachmentTarget(nil), sources...)
+				if direct, found := collector.directByID[accountID]; found {
+					accountSources = append(accountSources, direct)
+				}
+				collector.affectedByID[accountID] = affectedTarget{
+					Target:     queryTargetFromAttachmentTarget(accountTarget, collector.managementAccountID),
+					Provenance: attachmentProvenanceForTarget(accountSources, accountID),
+				}
+			}
+			collector.mu.Unlock()
 
-	organizationalUnits, err := listChildren(collector.ctx, collector.client, current.ID, types.ChildTypeOrganizationalUnit)
-	if err != nil {
-		return fmt.Errorf("list organizational units for %s: %w", current.ID, err)
+			organizationalUnits, err := listOrganizationalUnitsForParent(ctx, collector.client, current.ID)
+			if err != nil {
+				return nil, fmt.Errorf("list organizational units for %s: %w", current.ID, err)
+			}
+			children := make([]organizationTraversalJob, 0, len(organizationalUnits))
+			for _, ou := range organizationalUnits {
+				ouID := aws.ToString(ou.Id)
+				children = append(children, collector.newJob(
+					scpAttachmentTarget{
+						Type: organizationalUnitEntityType, ID: ouID, Name: aws.ToString(ou.Name),
+					},
+					sources,
+					appendPath(ancestors, ouID),
+				))
+			}
+			return children, nil
+		},
 	}
-	for _, child := range organizationalUnits {
-		ouID := aws.ToString(child.Id)
-		if err := collector.walk(scpAttachmentTarget{Type: organizationalUnitEntityType, ID: ouID}, sources); err != nil {
-			return err
-		}
-	}
-	collector.completed[current.ID] = true
-	return nil
 }
 
 func attachmentProvenanceForTarget(sources []scpAttachmentTarget, targetID string) []attachmentProvenance {

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
@@ -364,5 +365,66 @@ func TestSelectedQueryTargetRequiresOneExactTarget(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), test.want) || classifyError(err).Code != errorCodeInvalidInvocation {
 			t.Fatalf("error = %v, want invalid_invocation containing %q", err, test.want)
 		}
+	}
+}
+
+func TestAttachmentReachRunsOUBranchesWithinBound(t *testing.T) {
+	t.Parallel()
+	const branchCount = 8
+	organizationalUnits := make([]types.OrganizationalUnit, branchCount)
+	for index := range organizationalUnits {
+		id := fmt.Sprintf("ou-root-%08d", index)
+		organizationalUnits[index] = types.OrganizationalUnit{Id: aws.String(id), Name: aws.String(id)}
+	}
+	entered := make(chan struct{}, branchCount)
+	release := make(chan struct{})
+	client := &fakeOrganizationsClient{
+		listTargetsForPolicyFn: func(context.Context, *organizations.ListTargetsForPolicyInput) (*organizations.ListTargetsForPolicyOutput, error) {
+			return &organizations.ListTargetsForPolicyOutput{Targets: []types.PolicyTargetSummary{{
+				TargetId: aws.String(queryRootID), Name: aws.String("Root"), Type: types.TargetTypeRoot,
+			}}}, nil
+		},
+		listPoliciesForTargetFn: func(context.Context, *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{{
+				Id: aws.String(queryPolicyID), Name: aws.String("Guardrail"), Type: types.PolicyTypeServiceControlPolicy,
+			}}}, nil
+		},
+		listAccountsForParentFn: func(ctx context.Context, input *organizations.ListAccountsForParentInput) (*organizations.ListAccountsForParentOutput, error) {
+			if aws.ToString(input.ParentId) == queryRootID {
+				return &organizations.ListAccountsForParentOutput{}, nil
+			}
+			entered <- struct{}{}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-release:
+				return &organizations.ListAccountsForParentOutput{}, nil
+			}
+		},
+		listOUsForParentFn: func(_ context.Context, input *organizations.ListOrganizationalUnitsForParentInput) (*organizations.ListOrganizationalUnitsForParentOutput, error) {
+			if aws.ToString(input.ParentId) == queryRootID {
+				return &organizations.ListOrganizationalUnitsForParentOutput{OrganizationalUnits: organizationalUnits}, nil
+			}
+			return &organizations.ListOrganizationalUnitsForParentOutput{}, nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := buildAttachmentsQuery(
+			context.Background(), client, queryPolicyID, queryRootID, "Root", queryManagementAccount,
+		)
+		done <- err
+	}()
+	for range organizationInspectionConcurrency {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("attachment traversal did not fill its concurrency bound")
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("build attachment reach: %v", err)
 	}
 }

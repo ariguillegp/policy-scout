@@ -196,10 +196,16 @@ The selected identity needs the following permissions, depending on the scope
 requested:
 
 - `organizations:ListRoots`
-- `organizations:ListChildren` for name search, the entire organization, or
-  attached root/OU scopes queried by `aws attachments`
-- `organizations:DescribeAccount` for account search or account inspection
-- `organizations:DescribeOrganizationalUnit` for any traversal through OUs
+- `organizations:ListAccountsForParent` and
+  `organizations:ListOrganizationalUnitsForParent` for the fastest name search,
+  entire-organization inspection, and attached root/OU scopes queried by `aws
+  attachments`
+- Existing policies can instead grant `organizations:ListChildren`,
+  `organizations:DescribeAccount`, and
+  `organizations:DescribeOrganizationalUnit`; Policy Scout automatically falls
+  back to these APIs when either optimized parent-list request is denied
+- `organizations:DescribeAccount` for focused account inspection
+- `organizations:DescribeOrganizationalUnit` for focused account/OU paths
 - `organizations:DescribeOrganization` for an account, the entire organization,
   or `aws attachments`
 - `organizations:ListParents`
@@ -207,17 +213,20 @@ requested:
 - `organizations:DescribePolicy` only with `--include-policy-documents`
 - `organizations:ListTargetsForPolicy` for `aws attachments`
 
-`aws search` only needs `ListRoots`, `ListChildren`, and the applicable
-`DescribeAccount`/`DescribeOrganizationalUnit` permissions. It does not list
-policy attachments or retrieve policy documents.
+`aws search` always needs `ListRoots` plus OU traversal permission:
+`ListOrganizationalUnitsForParent`, or `ListChildren` with
+`DescribeOrganizationalUnit` for fallback. Searches that include accounts also
+need `ListAccountsForParent`, or `DescribeAccount` for fallback. It does not
+list policy attachments or retrieve policy documents.
 
 `aws policies` inspects only the selected target and its ancestors. `aws
 attachments` uses `ListTargetsForPolicy` for direct locations, then traverses
 only directly attached roots and OU subtrees to determine inherited reach. It
-therefore also needs `DescribeAccount` and `DescribeOrganizationalUnit` for
-descendants encountered in those scopes. A policy attached only to accounts
-does not require descendant traversal. AWS permits `ListTargetsForPolicy` only
-from the management account or an Organizations delegated administrator.
+therefore also needs either both optimized parent-list permissions or the
+legacy fallback permissions for descendants encountered in those scopes. A
+policy attached only to accounts does not require descendant traversal. AWS
+permits `ListTargetsForPolicy` only from the management account or an
+Organizations delegated administrator.
 
 ## Documentation
 

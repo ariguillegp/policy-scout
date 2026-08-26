@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -87,14 +88,20 @@ func outputFormatCompletion(cmd *cobra.Command, args []string, toComplete string
 	}, cobra.ShellCompDirectiveDefault
 }
 
-type organizationsClient interface {
+type hierarchyListClient interface {
+	organizations.ListAccountsForParentAPIClient
 	organizations.ListChildrenAPIClient
+	organizations.ListOrganizationalUnitsForParentAPIClient
+	DescribeAccount(context.Context, *organizations.DescribeAccountInput, ...func(*organizations.Options)) (*organizations.DescribeAccountOutput, error)
+	DescribeOrganizationalUnit(context.Context, *organizations.DescribeOrganizationalUnitInput, ...func(*organizations.Options)) (*organizations.DescribeOrganizationalUnitOutput, error)
+}
+
+type organizationsClient interface {
+	hierarchyListClient
 	organizations.ListParentsAPIClient
 	organizations.ListPoliciesForTargetAPIClient
 	organizations.ListRootsAPIClient
 	organizations.ListTargetsForPolicyAPIClient
-	DescribeAccount(context.Context, *organizations.DescribeAccountInput, ...func(*organizations.Options)) (*organizations.DescribeAccountOutput, error)
-	DescribeOrganizationalUnit(context.Context, *organizations.DescribeOrganizationalUnitInput, ...func(*organizations.Options)) (*organizations.DescribeOrganizationalUnitOutput, error)
 	DescribeOrganization(context.Context, *organizations.DescribeOrganizationInput, ...func(*organizations.Options)) (*organizations.DescribeOrganizationOutput, error)
 	DescribePolicy(context.Context, *organizations.DescribePolicyInput, ...func(*organizations.Options)) (*organizations.DescribePolicyOutput, error)
 }
@@ -437,13 +444,65 @@ func getAWSAuthStatus(
 	stsClient stsClient,
 	organizationsClient authStatusOrganizationsClient,
 ) (awsAuthStatus, error) {
-	identity, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
-	if err != nil {
-		return awsAuthStatus{}, fmt.Errorf("get AWS caller identity: %w", err)
+	type identityResult struct {
+		identity *sts.GetCallerIdentityOutput
+		err      error
 	}
-	if identity == nil || aws.ToString(identity.Account) == "" || aws.ToString(identity.Arn) == "" || aws.ToString(identity.UserId) == "" {
-		return awsAuthStatus{}, errors.New("AWS returned an incomplete caller identity")
+	type organizationResult struct {
+		organization *organizations.DescribeOrganizationOutput
+		err          error
 	}
+	requestCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	identityResults := make(chan identityResult, 1)
+	organizationResults := make(chan organizationResult, 1)
+	go func() {
+		identity, err := stsClient.GetCallerIdentity(requestCtx, &sts.GetCallerIdentityInput{})
+		identityResults <- identityResult{identity: identity, err: err}
+	}()
+	go func() {
+		organization, err := organizationsClient.DescribeOrganization(
+			requestCtx, &organizations.DescribeOrganizationInput{},
+		)
+		organizationResults <- organizationResult{organization: organization, err: err}
+	}()
+
+	var identityResponse identityResult
+	var organizationResponse organizationResult
+	for identityResults != nil || organizationResults != nil {
+		select {
+		case identityResponse = <-identityResults:
+			identityResults = nil
+			if identityResponse.err != nil {
+				cancel()
+				if organizationResults != nil {
+					<-organizationResults
+				}
+				return awsAuthStatus{}, fmt.Errorf("get AWS caller identity: %w", identityResponse.err)
+			}
+			identity := identityResponse.identity
+			if identity == nil || aws.ToString(identity.Account) == "" || aws.ToString(identity.Arn) == "" || aws.ToString(identity.UserId) == "" {
+				cancel()
+				if organizationResults != nil {
+					<-organizationResults
+				}
+				return awsAuthStatus{}, errors.New("AWS returned an incomplete caller identity")
+			}
+		case organizationResponse = <-organizationResults:
+			organizationResults = nil
+			var maxAttemptsError *awsretry.MaxAttemptsError
+			if errors.Is(organizationResponse.err, context.Canceled) ||
+				errors.Is(organizationResponse.err, context.DeadlineExceeded) ||
+				errors.As(organizationResponse.err, &maxAttemptsError) {
+				cancel()
+				if identityResults != nil {
+					<-identityResults
+				}
+				return awsAuthStatus{}, fmt.Errorf("describe AWS organization: %w", organizationResponse.err)
+			}
+		}
+	}
+	identity := identityResponse.identity
 
 	status := awsAuthStatus{
 		SchemaVersion: authStatusJSONSchemaVersion,
@@ -462,17 +521,8 @@ func getAWSAuthStatus(
 		status.Credentials.ExpiresAt = credentials.Expires.UTC().Format(time.RFC3339)
 	}
 
-	organization, organizationsErr := organizationsClient.DescribeOrganization(
-		ctx,
-		&organizations.DescribeOrganizationInput{},
-	)
+	organization, organizationsErr := organizationResponse.organization, organizationResponse.err
 	if organizationsErr != nil {
-		var maxAttemptsError *awsretry.MaxAttemptsError
-		if errors.Is(organizationsErr, context.Canceled) ||
-			errors.Is(organizationsErr, context.DeadlineExceeded) ||
-			errors.As(organizationsErr, &maxAttemptsError) {
-			return awsAuthStatus{}, fmt.Errorf("describe AWS organization: %w", organizationsErr)
-		}
 		diagnostic := classifyError(organizationsErr)
 		status.Organizations.Error = diagnostic.Code
 		status.Organizations.Message = diagnostic.Message
@@ -582,12 +632,15 @@ func describeTargetWithPolicyDocuments(
 	}
 	client := organizations.NewFromConfig(cfg)
 
-	rootID, rootName, err := getRoot(ctx, client)
+	rootID, rootName, managementAccountID, err := getRootAndManagementAccount(
+		ctx, client, !strings.HasPrefix(targetID, "ou-"),
+	)
 	if err != nil {
-		return fmt.Errorf("get organization root ID: %w", err)
+		return err
 	}
-
-	return inspectOrganizationTargetWithPolicyDocuments(ctx, writer, client, targetID, rootID, rootName, format, includeDocuments)
+	return displayOrganizationTree(
+		ctx, writer, client, targetID, rootID, rootName, managementAccountID, format, includeDocuments,
+	)
 }
 
 type scpAttachmentTarget struct {
@@ -973,16 +1026,9 @@ func buildOrganizationTree(
 	var err error
 	switch selection.Type {
 	case allSelectionType:
-		root.Children, err = buildOrganizationChildren(
-			ctx,
-			client,
-			rootID,
-			managementAccountID,
-			[]string{rootID},
-			map[string]bool{},
-			map[string]bool{},
-			cache,
-		)
+		err = runOrganizationTraversal(ctx, []organizationTraversalJob{
+			newOrganizationTreeJob(client, &root, managementAccountID, []string{rootID}, cache),
+		})
 	case organizationalUnitEntityType:
 		root.Children, err = buildOrganizationalUnitPath(ctx, client, targetID, rootID, cache)
 	case accountEntityType:
@@ -1000,26 +1046,40 @@ func buildAccountPath(
 	targetAccountID, rootID, managementAccountID string,
 	cache *organizationCache,
 ) ([]organizationNode, error) {
-	account, err := getAccount(ctx, client, targetAccountID)
-	if err != nil {
-		return nil, fmt.Errorf("describe account %s: %w", targetAccountID, err)
+	var account *types.Account
+	var accountPath []string
+	if err := runOrganizationJobs(ctx, 2, func(ctx context.Context, index int) error {
+		if index == 0 {
+			var err error
+			account, err = getAccount(ctx, client, targetAccountID)
+			if err != nil {
+				return fmt.Errorf("describe account %s: %w", targetAccountID, err)
+			}
+			return nil
+		}
+		var err error
+		accountPath, err = buildAncestorPath(ctx, client, targetAccountID, rootID)
+		return err
+	}); err != nil {
+		return nil, err
 	}
 	cache.setEntityName(targetAccountID, aws.ToString(account.Name))
 
-	accountPath, err := buildAncestorPath(ctx, client, targetAccountID, rootID)
-	if err != nil {
+	ouIDs := accountPath[1 : len(accountPath)-1]
+	var policyTargetIDs []string
+	if targetAccountID != managementAccountID {
+		policyTargetIDs = accountPath
+	} else if len(ouIDs) > 0 {
+		policyTargetIDs = accountPath[:len(accountPath)-1]
+	}
+	if err := loadFocusedPathData(ctx, client, ouIDs, policyTargetIDs, cache); err != nil {
 		return nil, err
 	}
 
 	ouNodes := make([]organizationNode, 0, len(accountPath)-2)
 	for index := 1; index < len(accountPath)-1; index++ {
 		ouID := accountPath[index]
-		ou, err := getOU(ctx, client, ouID)
-		if err != nil {
-			return nil, fmt.Errorf("get organizational unit %s: %w", ouID, err)
-		}
-		ouName := aws.ToString(ou.Name)
-		cache.setEntityName(ouID, ouName)
+		ouName := cache.entityName(ouID)
 		ouNode, err := buildOrganizationalUnitNode(ctx, client, ouID, ouName, accountPath[:index+1], cache)
 		if err != nil {
 			return nil, err
@@ -1055,16 +1115,14 @@ func buildOrganizationalUnitPath(
 	if len(path) < 2 || path[0] != rootID || path[len(path)-1] != targetOrganizationalUnitID {
 		return nil, fmt.Errorf("invalid organizational unit path from root %s to %s", rootID, targetOrganizationalUnitID)
 	}
+	if err := loadFocusedPathData(ctx, client, path[1:], path, cache); err != nil {
+		return nil, err
+	}
 
 	ouNodes := make([]organizationNode, 0, len(path)-1)
 	for index := 1; index < len(path); index++ {
 		ouID := path[index]
-		ou, err := getOU(ctx, client, ouID)
-		if err != nil {
-			return nil, fmt.Errorf("get organizational unit %s: %w", ouID, err)
-		}
-		ouName := aws.ToString(ou.Name)
-		cache.setEntityName(ouID, ouName)
+		ouName := cache.entityName(ouID)
 		ouNode, err := buildOrganizationalUnitNode(ctx, client, ouID, ouName, path[:index+1], cache)
 		if err != nil {
 			return nil, err
@@ -1078,6 +1136,42 @@ func buildOrganizationalUnitPath(
 		child = ouNodes[index]
 	}
 	return []organizationNode{child}, nil
+}
+
+func loadFocusedPathData(
+	ctx context.Context,
+	client organizationsClient,
+	ouIDs, policyTargetIDs []string,
+	cache *organizationCache,
+) error {
+	type pathJob struct {
+		entityID   string
+		describeOU bool
+	}
+	jobs := make([]pathJob, 0, len(ouIDs)+len(policyTargetIDs))
+	for index := range max(len(ouIDs), len(policyTargetIDs)) {
+		if index < len(ouIDs) {
+			jobs = append(jobs, pathJob{entityID: ouIDs[index], describeOU: true})
+		}
+		if index < len(policyTargetIDs) {
+			jobs = append(jobs, pathJob{entityID: policyTargetIDs[index]})
+		}
+	}
+	return runOrganizationJobs(ctx, len(jobs), func(ctx context.Context, index int) error {
+		job := jobs[index]
+		if job.describeOU {
+			ou, err := getOU(ctx, client, job.entityID)
+			if err != nil {
+				return fmt.Errorf("get organizational unit %s: %w", job.entityID, err)
+			}
+			cache.setEntityName(job.entityID, aws.ToString(ou.Name))
+			return nil
+		}
+		if _, err := cache.policiesForTarget(ctx, client, job.entityID); err != nil {
+			return fmt.Errorf("list SCPs for %s: %w", job.entityID, err)
+		}
+		return nil
+	})
 }
 
 func buildAncestorPath(
@@ -1124,98 +1218,161 @@ func buildAncestorPath(
 	return result, nil
 }
 
-// buildOrganizationChildren owns hierarchy ordering: accounts precede OUs and each group is sorted by ID.
-func buildOrganizationChildren(
-	ctx context.Context,
+func newOrganizationTreeJob(
 	client organizationsClient,
-	parentID, managementAccountID string,
+	node *organizationNode,
+	managementAccountID string,
 	ancestors []string,
-	completed, active map[string]bool,
 	cache *organizationCache,
-) ([]organizationNode, error) {
-	if active[parentID] {
-		return nil, fmt.Errorf("cycle detected in organization hierarchy at %s", parentID)
-	}
-	active[parentID] = true
-	defer delete(active, parentID)
+) organizationTraversalJob {
+	return organizationTraversalJob{
+		id:        node.ID,
+		ancestors: ancestors,
+		run: func(ctx context.Context) ([]organizationTraversalJob, error) {
+			if node.Type == accountEntityType {
+				cache.setEntityName(node.ID, node.Name)
+				built, err := buildAccountNode(
+					ctx, client, node.ID, node.Name, managementAccountID, ancestors, cache,
+				)
+				if err != nil {
+					return nil, err
+				}
+				*node = built
+				return nil, nil
+			}
+			if node.Type == organizationalUnitEntityType {
+				cache.setEntityName(node.ID, node.Name)
+				built, err := buildOrganizationalUnitNode(ctx, client, node.ID, node.Name, ancestors, cache)
+				if err != nil {
+					return nil, err
+				}
+				*node = built
+			}
 
-	var nodes []organizationNode
-	accounts, err := listChildren(ctx, client, parentID, types.ChildTypeAccount)
-	if err != nil {
-		return nil, fmt.Errorf("list accounts for %s: %w", parentID, err)
+			accounts, err := listAccountsForParent(ctx, client, node.ID)
+			if err != nil {
+				return nil, fmt.Errorf("list accounts for %s: %w", node.ID, err)
+			}
+			organizationalUnits, err := listOrganizationalUnitsForParent(ctx, client, node.ID)
+			if err != nil {
+				return nil, fmt.Errorf("list organizational units for %s: %w", node.ID, err)
+			}
+
+			node.Children = make([]organizationNode, len(accounts)+len(organizationalUnits))
+			children := make([]organizationTraversalJob, 0, len(node.Children))
+			for index, account := range accounts {
+				accountID := aws.ToString(account.Id)
+				node.Children[index] = organizationNode{
+					Type: accountEntityType, ID: accountID, Name: aws.ToString(account.Name),
+				}
+				children = append(children, newOrganizationTreeJob(
+					client, &node.Children[index], managementAccountID, appendPath(ancestors, accountID), cache,
+				))
+			}
+			for index, ou := range organizationalUnits {
+				ouID := aws.ToString(ou.Id)
+				childIndex := len(accounts) + index
+				node.Children[childIndex] = organizationNode{
+					Type: organizationalUnitEntityType, ID: ouID, Name: aws.ToString(ou.Name),
+				}
+				children = append(children, newOrganizationTreeJob(
+					client, &node.Children[childIndex], managementAccountID, appendPath(ancestors, ouID), cache,
+				))
+			}
+			return children, nil
+		},
 	}
-	accountIDs := make([]string, 0, len(accounts))
-	for _, child := range accounts {
-		accountID := aws.ToString(child.Id)
-		if active[accountID] {
-			return nil, fmt.Errorf("cycle detected in organization hierarchy at %s", accountID)
-		}
-		if completed[accountID] {
-			continue
-		}
-		accountIDs = append(accountIDs, accountID)
+}
+
+type organizationTraversalJob struct {
+	id        string
+	ancestors []string
+	run       func(context.Context) ([]organizationTraversalJob, error)
+}
+
+type organizationTraversalResult struct {
+	children []organizationTraversalJob
+	err      error
+}
+
+// runOrganizationTraversal centrally schedules discovered work so workers never wait for descendants.
+func runOrganizationTraversal(ctx context.Context, initial []organizationTraversalJob) error {
+	jobCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan organizationTraversalJob)
+	results := make(chan organizationTraversalResult, organizationInspectionConcurrency)
+	var workers sync.WaitGroup
+	workers.Add(organizationInspectionConcurrency)
+	for range organizationInspectionConcurrency {
+		go func() {
+			defer workers.Done()
+			for job := range jobs {
+				children, err := job.run(jobCtx)
+				results <- organizationTraversalResult{children: children, err: err}
+			}
+		}()
 	}
 
-	accountNodes := make([]organizationNode, len(accountIDs))
-	err = runOrganizationJobs(ctx, len(accountIDs), func(jobCtx context.Context, index int) error {
-		accountID := accountIDs[index]
-		account, err := getAccount(jobCtx, client, accountID)
-		if err != nil {
-			return fmt.Errorf("get account %s: %w", accountID, err)
-		}
-		cache.setEntityName(accountID, aws.ToString(account.Name))
-		node, err := buildAccountNode(
-			jobCtx, client, accountID, aws.ToString(account.Name), managementAccountID, appendPath(ancestors, accountID), cache,
-		)
-		if err != nil {
-			return err
-		}
-		accountNodes[index] = node
-		return nil
-	})
-	if err != nil {
-		return nil, err
+	queue := append([]organizationTraversalJob(nil), initial...)
+	seen := make(map[string]bool)
+	for _, job := range initial {
+		seen[job.id] = true
 	}
-	nodes = append(nodes, accountNodes...)
-	for _, accountID := range accountIDs {
-		completed[accountID] = true
+	active := 0
+	var firstError error
+	done := jobCtx.Done()
+	for len(queue) > 0 || active > 0 {
+		var ready chan organizationTraversalJob
+		var next organizationTraversalJob
+		if firstError == nil && len(queue) > 0 {
+			ready = jobs
+			next = queue[0]
+		}
+		select {
+		case ready <- next:
+			queue = queue[1:]
+			active++
+		case result := <-results:
+			active--
+			if result.err != nil && firstError == nil {
+				firstError = result.err
+				queue = nil
+				cancel()
+				done = nil
+				continue
+			}
+			if firstError != nil {
+				continue
+			}
+			for _, child := range result.children {
+				if slices.Contains(child.ancestors[:len(child.ancestors)-1], child.id) {
+					firstError = fmt.Errorf("cycle detected in organization hierarchy at %s", child.id)
+					queue = nil
+					cancel()
+					done = nil
+					break
+				}
+				if seen[child.id] {
+					firstError = fmt.Errorf("duplicate entity detected in organization hierarchy at %s", child.id)
+					queue = nil
+					cancel()
+					done = nil
+					break
+				}
+				seen[child.id] = true
+				queue = append(queue, child)
+			}
+		case <-done:
+			if firstError == nil {
+				firstError = ctx.Err()
+				queue = nil
+			}
+			done = nil
+		}
 	}
-
-	organizationalUnits, err := listChildren(ctx, client, parentID, types.ChildTypeOrganizationalUnit)
-	if err != nil {
-		return nil, fmt.Errorf("list organizational units for %s: %w", parentID, err)
-	}
-	for _, child := range organizationalUnits {
-		ouID := aws.ToString(child.Id)
-		if active[ouID] {
-			return nil, fmt.Errorf("cycle detected in organization hierarchy at %s", ouID)
-		}
-		if completed[ouID] {
-			continue
-		}
-		ou, err := getOU(ctx, client, ouID)
-		if err != nil {
-			return nil, fmt.Errorf("get organizational unit %s: %w", ouID, err)
-		}
-		ouName := aws.ToString(ou.Name)
-		cache.setEntityName(ouID, ouName)
-		ouPath := appendPath(ancestors, ouID)
-		ouNode, err := buildOrganizationalUnitNode(ctx, client, ouID, ouName, ouPath, cache)
-		if err != nil {
-			return nil, err
-		}
-		children, err := buildOrganizationChildren(
-			ctx, client, ouID, managementAccountID, ouPath, completed, active, cache,
-		)
-		if err != nil {
-			return nil, err
-		}
-		ouNode.Children = children
-		nodes = append(nodes, ouNode)
-	}
-
-	completed[parentID] = true
-	return nodes, nil
+	close(jobs)
+	workers.Wait()
+	return firstError
 }
 
 func runOrganizationJobs(ctx context.Context, jobCount int, job func(context.Context, int) error) error {
@@ -1553,9 +1710,162 @@ func attachmentTargetText(target scpAttachmentTarget) string {
 	return fmt.Sprintf("%s %s [%s]", typeLabel, target.Name, target.ID)
 }
 
-// listChildren lists all children of the requested type across every response page,
-// sorted by ID so callers do not depend on AWS response ordering.
-func listChildren(ctx context.Context, client organizations.ListChildrenAPIClient, parentID string, childType types.ChildType) ([]types.Child, error) {
+// listAccountsForParent lists account metadata across every response page,
+// deduplicated and sorted by ID so callers do not depend on AWS response ordering.
+func listAccountsForParent(
+	ctx context.Context,
+	client hierarchyListClient,
+	parentID string,
+) ([]types.Account, error) {
+	paginator := organizations.NewListAccountsForParentPaginator(
+		client,
+		&organizations.ListAccountsForParentInput{ParentId: &parentID},
+	)
+	accountsByID := make(map[string]types.Account)
+	seenTokens := make(map[string]bool)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			if isAccessDeniedException(err) {
+				return listAccountsForParentLegacy(ctx, client, parentID)
+			}
+			return nil, err
+		}
+		if err := rejectRepeatedToken(seenTokens, page.NextToken, "ListAccountsForParent"); err != nil {
+			return nil, err
+		}
+		for _, account := range page.Accounts {
+			accountID := aws.ToString(account.Id)
+			if accountID == "" {
+				return nil, fmt.Errorf("AWS returned an account without an ID for parent %s", parentID)
+			}
+			accountName := aws.ToString(account.Name)
+			if accountName == "" {
+				return nil, fmt.Errorf("AWS returned no name for account %s", accountID)
+			}
+			if existing, found := accountsByID[accountID]; found {
+				if aws.ToString(existing.Name) != accountName {
+					return nil, fmt.Errorf(
+						"account %s has conflicting names %q and %q",
+						accountID, aws.ToString(existing.Name), accountName,
+					)
+				}
+				continue
+			}
+			accountsByID[accountID] = account
+		}
+	}
+	accounts := make([]types.Account, 0, len(accountsByID))
+	for _, account := range accountsByID {
+		accounts = append(accounts, account)
+	}
+	sort.Slice(accounts, func(left, right int) bool {
+		return aws.ToString(accounts[left].Id) < aws.ToString(accounts[right].Id)
+	})
+	return accounts, nil
+}
+
+func listAccountsForParentLegacy(
+	ctx context.Context,
+	client hierarchyListClient,
+	parentID string,
+) ([]types.Account, error) {
+	children, err := listChildren(ctx, client, parentID, types.ChildTypeAccount)
+	if err != nil {
+		return nil, err
+	}
+	accounts := make([]types.Account, len(children))
+	for index, child := range children {
+		account, err := getAccount(ctx, client, aws.ToString(child.Id))
+		if err != nil {
+			return nil, fmt.Errorf("describe account %s: %w", aws.ToString(child.Id), err)
+		}
+		accounts[index] = *account
+	}
+	return accounts, nil
+}
+
+// listOrganizationalUnitsForParent lists OU metadata across every response page,
+// deduplicated and sorted by ID so callers do not depend on AWS response ordering.
+func listOrganizationalUnitsForParent(
+	ctx context.Context,
+	client hierarchyListClient,
+	parentID string,
+) ([]types.OrganizationalUnit, error) {
+	paginator := organizations.NewListOrganizationalUnitsForParentPaginator(
+		client,
+		&organizations.ListOrganizationalUnitsForParentInput{ParentId: &parentID},
+	)
+	organizationalUnitsByID := make(map[string]types.OrganizationalUnit)
+	seenTokens := make(map[string]bool)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			if isAccessDeniedException(err) {
+				return listOrganizationalUnitsForParentLegacy(ctx, client, parentID)
+			}
+			return nil, err
+		}
+		if err := rejectRepeatedToken(seenTokens, page.NextToken, "ListOrganizationalUnitsForParent"); err != nil {
+			return nil, err
+		}
+		for _, ou := range page.OrganizationalUnits {
+			ouID := aws.ToString(ou.Id)
+			if ouID == "" {
+				return nil, fmt.Errorf("AWS returned an organizational unit without an ID for parent %s", parentID)
+			}
+			ouName := aws.ToString(ou.Name)
+			if ouName == "" {
+				return nil, fmt.Errorf("AWS returned no name for organizational unit %s", ouID)
+			}
+			if existing, found := organizationalUnitsByID[ouID]; found {
+				if aws.ToString(existing.Name) != ouName {
+					return nil, fmt.Errorf(
+						"organizational unit %s has conflicting names %q and %q",
+						ouID, aws.ToString(existing.Name), ouName,
+					)
+				}
+				continue
+			}
+			organizationalUnitsByID[ouID] = ou
+		}
+	}
+	organizationalUnits := make([]types.OrganizationalUnit, 0, len(organizationalUnitsByID))
+	for _, ou := range organizationalUnitsByID {
+		organizationalUnits = append(organizationalUnits, ou)
+	}
+	sort.Slice(organizationalUnits, func(left, right int) bool {
+		return aws.ToString(organizationalUnits[left].Id) < aws.ToString(organizationalUnits[right].Id)
+	})
+	return organizationalUnits, nil
+}
+
+func listOrganizationalUnitsForParentLegacy(
+	ctx context.Context,
+	client hierarchyListClient,
+	parentID string,
+) ([]types.OrganizationalUnit, error) {
+	children, err := listChildren(ctx, client, parentID, types.ChildTypeOrganizationalUnit)
+	if err != nil {
+		return nil, err
+	}
+	organizationalUnits := make([]types.OrganizationalUnit, len(children))
+	for index, child := range children {
+		ou, err := getOU(ctx, client, aws.ToString(child.Id))
+		if err != nil {
+			return nil, fmt.Errorf("describe organizational unit %s: %w", aws.ToString(child.Id), err)
+		}
+		organizationalUnits[index] = *ou
+	}
+	return organizationalUnits, nil
+}
+
+func listChildren(
+	ctx context.Context,
+	client organizations.ListChildrenAPIClient,
+	parentID string,
+	childType types.ChildType,
+) ([]types.Child, error) {
 	input := &organizations.ListChildrenInput{ParentId: &parentID, ChildType: childType}
 	paginator := organizations.NewListChildrenPaginator(client, input)
 
@@ -1588,6 +1898,11 @@ func listChildren(ctx context.Context, client organizations.ListChildrenAPIClien
 		return aws.ToString(children[left].Id) < aws.ToString(children[right].Id)
 	})
 	return children, nil
+}
+
+func isAccessDeniedException(err error) bool {
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && strings.EqualFold(apiErr.ErrorCode(), "AccessDeniedException")
 }
 
 func getAccount(ctx context.Context, client accountDescriber, targetAccountID string) (*types.Account, error) {
@@ -1675,6 +1990,65 @@ func getManagementAccountID(ctx context.Context, client organizationsClient) (st
 		return "", fmt.Errorf("AWS returned invalid management account ID %q: %w", managementAccountID, err)
 	}
 	return managementAccountID, nil
+}
+
+func getRootAndManagementAccount(
+	ctx context.Context,
+	client organizationsClient,
+	includeManagementAccount bool,
+) (string, string, string, error) {
+	if !includeManagementAccount {
+		rootID, rootName, err := getRoot(ctx, client)
+		if err != nil {
+			return "", "", "", fmt.Errorf("get organization root ID: %w", err)
+		}
+		return rootID, rootName, "", nil
+	}
+	type rootResult struct {
+		id, name string
+		err      error
+	}
+	type managementResult struct {
+		id  string
+		err error
+	}
+	requestCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	rootResults := make(chan rootResult, 1)
+	managementResults := make(chan managementResult, 1)
+	go func() {
+		id, name, err := getRoot(requestCtx, client)
+		rootResults <- rootResult{id: id, name: name, err: err}
+	}()
+	go func() {
+		id, err := getManagementAccountID(requestCtx, client)
+		managementResults <- managementResult{id: id, err: err}
+	}()
+	var root rootResult
+	var management managementResult
+	for rootResults != nil || managementResults != nil {
+		select {
+		case root = <-rootResults:
+			rootResults = nil
+			if root.err != nil {
+				cancel()
+				if managementResults != nil {
+					<-managementResults
+				}
+				return "", "", "", fmt.Errorf("get organization root ID: %w", root.err)
+			}
+		case management = <-managementResults:
+			managementResults = nil
+			if management.err != nil {
+				cancel()
+				if rootResults != nil {
+					<-rootResults
+				}
+				return "", "", "", management.err
+			}
+		}
+	}
+	return root.id, root.name, management.id, nil
 }
 
 // getRoot returns the organization's only root after consuming all response pages.

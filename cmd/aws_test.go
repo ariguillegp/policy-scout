@@ -54,7 +54,9 @@ func (fake *fakeSTSClient) GetCallerIdentity(
 }
 
 type fakeOrganizationsClient struct {
+	listAccountsForParentFn    func(context.Context, *organizations.ListAccountsForParentInput) (*organizations.ListAccountsForParentOutput, error)
 	listChildrenFn             func(context.Context, *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error)
+	listOUsForParentFn         func(context.Context, *organizations.ListOrganizationalUnitsForParentInput) (*organizations.ListOrganizationalUnitsForParentOutput, error)
 	listParentsFn              func(context.Context, *organizations.ListParentsInput) (*organizations.ListParentsOutput, error)
 	listPoliciesForTargetFn    func(context.Context, *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error)
 	listRootsFn                func(context.Context, *organizations.ListRootsInput) (*organizations.ListRootsOutput, error)
@@ -63,6 +65,33 @@ type fakeOrganizationsClient struct {
 	describeOrganizationalUnit func(context.Context, *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error)
 	describeOrganizationFn     func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error)
 	describePolicyFn           func(context.Context, *organizations.DescribePolicyInput) (*organizations.DescribePolicyOutput, error)
+}
+
+func (fake *fakeOrganizationsClient) ListAccountsForParent(
+	ctx context.Context,
+	input *organizations.ListAccountsForParentInput,
+	_ ...func(*organizations.Options),
+) (*organizations.ListAccountsForParentOutput, error) {
+	if fake.listAccountsForParentFn != nil {
+		return fake.listAccountsForParentFn(ctx, input)
+	}
+	children, err := fake.ListChildren(ctx, &organizations.ListChildrenInput{
+		ParentId: input.ParentId, NextToken: input.NextToken, ChildType: types.ChildTypeAccount,
+	})
+	if err != nil {
+		return nil, err
+	}
+	output := &organizations.ListAccountsForParentOutput{NextToken: children.NextToken}
+	for _, child := range children.Children {
+		account, describeErr := fake.DescribeAccount(ctx, &organizations.DescribeAccountInput{AccountId: child.Id})
+		if describeErr != nil {
+			return nil, describeErr
+		}
+		if account != nil && account.Account != nil {
+			output.Accounts = append(output.Accounts, *account.Account)
+		}
+	}
+	return output, nil
 }
 
 func (fake *fakeOrganizationsClient) ListChildren(
@@ -74,6 +103,35 @@ func (fake *fakeOrganizationsClient) ListChildren(
 		return &organizations.ListChildrenOutput{}, nil
 	}
 	return fake.listChildrenFn(ctx, input)
+}
+
+func (fake *fakeOrganizationsClient) ListOrganizationalUnitsForParent(
+	ctx context.Context,
+	input *organizations.ListOrganizationalUnitsForParentInput,
+	_ ...func(*organizations.Options),
+) (*organizations.ListOrganizationalUnitsForParentOutput, error) {
+	if fake.listOUsForParentFn != nil {
+		return fake.listOUsForParentFn(ctx, input)
+	}
+	children, err := fake.ListChildren(ctx, &organizations.ListChildrenInput{
+		ParentId: input.ParentId, NextToken: input.NextToken, ChildType: types.ChildTypeOrganizationalUnit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	output := &organizations.ListOrganizationalUnitsForParentOutput{NextToken: children.NextToken}
+	for _, child := range children.Children {
+		ou, describeErr := fake.DescribeOrganizationalUnit(
+			ctx, &organizations.DescribeOrganizationalUnitInput{OrganizationalUnitId: child.Id},
+		)
+		if describeErr != nil {
+			return nil, describeErr
+		}
+		if ou != nil && ou.OrganizationalUnit != nil {
+			output.OrganizationalUnits = append(output.OrganizationalUnits, *ou.OrganizationalUnit)
+		}
+	}
+	return output, nil
 }
 
 func (fake *fakeOrganizationsClient) ListParents(
@@ -2790,10 +2848,10 @@ func TestFullOrganizationInspectionUsesBoundedConcurrencyAndDeterministicOrder(t
 		accountCount = 64
 	)
 	accountIDs := make([]string, accountCount)
-	accountChildren := make([]types.Child, accountCount)
+	accounts := make([]types.Account, accountCount)
 	for index := range accountCount {
 		accountIDs[index] = fmt.Sprintf("%012d", 100000000000+index)
-		accountChildren[index] = types.Child{Id: aws.String(accountIDs[index]), Type: types.ChildTypeAccount}
+		accounts[index] = types.Account{Id: aws.String(accountIDs[index]), Name: aws.String("Account " + accountIDs[index])}
 	}
 
 	entered := make(chan struct{}, accountCount)
@@ -2803,16 +2861,23 @@ func TestFullOrganizationInspectionUsesBoundedConcurrencyAndDeterministicOrder(t
 	activeCalls := 0
 	peakCalls := 0
 	client := &fakeOrganizationsClient{
-		listChildrenFn: func(_ context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+		listAccountsForParentFn: func(_ context.Context, input *organizations.ListAccountsForParentInput) (*organizations.ListAccountsForParentOutput, error) {
 			if aws.ToString(input.ParentId) != rootID {
 				return nil, errors.New("unexpected parent")
 			}
-			if input.ChildType == types.ChildTypeAccount {
-				return &organizations.ListChildrenOutput{Children: accountChildren}, nil
-			}
-			return &organizations.ListChildrenOutput{}, nil
+			return &organizations.ListAccountsForParentOutput{Accounts: accounts}, nil
 		},
-		describeAccountFn: func(ctx context.Context, input *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+		listOUsForParentFn: func(context.Context, *organizations.ListOrganizationalUnitsForParentInput) (*organizations.ListOrganizationalUnitsForParentOutput, error) {
+			return &organizations.ListOrganizationalUnitsForParentOutput{}, nil
+		},
+		listPoliciesForTargetFn: func(ctx context.Context, input *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			targetID := aws.ToString(input.TargetId)
+			callsMu.Lock()
+			policyCalls[targetID]++
+			callsMu.Unlock()
+			if targetID == rootID {
+				return &organizations.ListPoliciesForTargetOutput{}, nil
+			}
 			callsMu.Lock()
 			activeCalls++
 			peakCalls = max(peakCalls, activeCalls)
@@ -2828,17 +2893,8 @@ func TestFullOrganizationInspectionUsesBoundedConcurrencyAndDeterministicOrder(t
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-release:
-				accountID := aws.ToString(input.AccountId)
-				return &organizations.DescribeAccountOutput{Account: &types.Account{
-					Id: input.AccountId, Name: aws.String("Account " + accountID),
-				}}, nil
+				return &organizations.ListPoliciesForTargetOutput{}, nil
 			}
-		},
-		listPoliciesForTargetFn: func(_ context.Context, input *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
-			callsMu.Lock()
-			policyCalls[aws.ToString(input.TargetId)]++
-			callsMu.Unlock()
-			return &organizations.ListPoliciesForTargetOutput{}, nil
 		},
 	}
 
@@ -2911,15 +2967,15 @@ func TestFullOrganizationInspectionCancelsOnFailureWithoutPartialText(t *testing
 	t.Parallel()
 
 	const rootID = "r-root"
-	accountChildren := make([]types.Child, 16)
-	for index := range accountChildren {
+	accounts := make([]types.Account, 16)
+	for index := range accounts {
 		accountID := fmt.Sprintf("%012d", 200000000000+index)
-		accountChildren[index] = types.Child{Id: aws.String(accountID), Type: types.ChildTypeAccount}
+		accounts[index] = types.Account{Id: aws.String(accountID), Name: aws.String("Account " + accountID)}
 	}
-	failingAccountID := aws.ToString(accountChildren[0].Id)
+	failingAccountID := aws.ToString(accounts[0].Id)
 	inspectionFailure := errors.New("account inspection failed")
-	entered := make(chan string, len(accountChildren))
-	canceled := make(chan string, len(accountChildren))
+	entered := make(chan string, len(accounts))
+	canceled := make(chan string, len(accounts))
 	proceed := make(chan struct{})
 	var releaseOnce sync.Once
 	releaseWorkers := func() {
@@ -2928,14 +2984,17 @@ func TestFullOrganizationInspectionCancelsOnFailureWithoutPartialText(t *testing
 	defer releaseWorkers()
 
 	client := &fakeOrganizationsClient{
-		listChildrenFn: func(_ context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
-			if input.ChildType == types.ChildTypeAccount {
-				return &organizations.ListChildrenOutput{Children: accountChildren}, nil
-			}
-			return &organizations.ListChildrenOutput{}, nil
+		listAccountsForParentFn: func(context.Context, *organizations.ListAccountsForParentInput) (*organizations.ListAccountsForParentOutput, error) {
+			return &organizations.ListAccountsForParentOutput{Accounts: accounts}, nil
 		},
-		describeAccountFn: func(ctx context.Context, input *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
-			accountID := aws.ToString(input.AccountId)
+		listOUsForParentFn: func(context.Context, *organizations.ListOrganizationalUnitsForParentInput) (*organizations.ListOrganizationalUnitsForParentOutput, error) {
+			return &organizations.ListOrganizationalUnitsForParentOutput{}, nil
+		},
+		listPoliciesForTargetFn: func(ctx context.Context, input *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			accountID := aws.ToString(input.TargetId)
+			if accountID == rootID {
+				return &organizations.ListPoliciesForTargetOutput{}, nil
+			}
 			entered <- accountID
 			select {
 			case <-ctx.Done():
@@ -2949,9 +3008,6 @@ func TestFullOrganizationInspectionCancelsOnFailureWithoutPartialText(t *testing
 			<-ctx.Done()
 			canceled <- accountID
 			return nil, ctx.Err()
-		},
-		listPoliciesForTargetFn: func(context.Context, *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
-			return nil, errors.New("policy lookup must not start before account descriptions finish")
 		},
 	}
 
@@ -3243,5 +3299,371 @@ func TestDisplayOrganizationTreeJSONBuildsAccountPath(t *testing.T) {
 	}
 	if !reflect.DeepEqual(account.SCPAttachments, wantAttachments) {
 		t.Fatalf("got attachments\n%+v\nwant\n%+v", account.SCPAttachments, wantAttachments)
+	}
+}
+
+func TestRicherHierarchyListsPaginateDeduplicateAndSortByID(t *testing.T) {
+	t.Parallel()
+	client := &fakeOrganizationsClient{
+		listAccountsForParentFn: func(_ context.Context, input *organizations.ListAccountsForParentInput) (*organizations.ListAccountsForParentOutput, error) {
+			if input.NextToken == nil {
+				return &organizations.ListAccountsForParentOutput{
+					Accounts: []types.Account{
+						{Id: aws.String("333333333333"), Name: aws.String("Third")},
+						{Id: aws.String("111111111111"), Name: aws.String("First")},
+					},
+					NextToken: aws.String("next"),
+				}, nil
+			}
+			return &organizations.ListAccountsForParentOutput{Accounts: []types.Account{
+				{Id: aws.String("222222222222"), Name: aws.String("Second")},
+				{Id: aws.String("111111111111"), Name: aws.String("First")},
+			}}, nil
+		},
+	}
+	accounts, err := listAccountsForParent(context.Background(), client, "r-root")
+	if err != nil {
+		t.Fatalf("list accounts: %v", err)
+	}
+	got := make([]string, len(accounts))
+	for index, account := range accounts {
+		got[index] = aws.ToString(account.Id)
+	}
+	if want := []string{"111111111111", "222222222222", "333333333333"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("account IDs = %v, want %v", got, want)
+	}
+}
+
+func TestRicherHierarchyListsFallBackOnAccessDenied(t *testing.T) {
+	t.Parallel()
+	const (
+		accountID = "123456789012"
+		ouID      = "ou-root-12345678"
+	)
+	listChildrenCalls := 0
+	client := &fakeOrganizationsClient{
+		listAccountsForParentFn: func(context.Context, *organizations.ListAccountsForParentInput) (*organizations.ListAccountsForParentOutput, error) {
+			return nil, &smithy.OperationError{
+				ServiceID: "Organizations", OperationName: "ListAccountsForParent",
+				Err: &types.AccessDeniedException{Message: aws.String("denied")},
+			}
+		},
+		listOUsForParentFn: func(context.Context, *organizations.ListOrganizationalUnitsForParentInput) (*organizations.ListOrganizationalUnitsForParentOutput, error) {
+			return nil, &smithy.OperationError{
+				ServiceID: "Organizations", OperationName: "ListOrganizationalUnitsForParent",
+				Err: &types.AccessDeniedException{Message: aws.String("denied")},
+			}
+		},
+		listChildrenFn: func(_ context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+			listChildrenCalls++
+			switch input.ChildType {
+			case types.ChildTypeAccount:
+				return &organizations.ListChildrenOutput{Children: []types.Child{{
+					Id: aws.String(accountID), Type: types.ChildTypeAccount,
+				}}}, nil
+			case types.ChildTypeOrganizationalUnit:
+				return &organizations.ListChildrenOutput{Children: []types.Child{{
+					Id: aws.String(ouID), Type: types.ChildTypeOrganizationalUnit,
+				}}}, nil
+			default:
+				return nil, fmt.Errorf("unexpected child type %s", input.ChildType)
+			}
+		},
+		describeAccountFn: func(context.Context, *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+			return &organizations.DescribeAccountOutput{Account: &types.Account{
+				Id: aws.String(accountID), Name: aws.String("Legacy account"),
+			}}, nil
+		},
+		describeOrganizationalUnit: func(context.Context, *organizations.DescribeOrganizationalUnitInput) (*organizations.DescribeOrganizationalUnitOutput, error) {
+			return &organizations.DescribeOrganizationalUnitOutput{OrganizationalUnit: &types.OrganizationalUnit{
+				Id: aws.String(ouID), Name: aws.String("Legacy OU"),
+			}}, nil
+		},
+	}
+
+	accounts, err := listAccountsForParent(context.Background(), client, "r-root")
+	if err != nil {
+		t.Fatalf("list accounts with fallback: %v", err)
+	}
+	organizationalUnits, err := listOrganizationalUnitsForParent(context.Background(), client, "r-root")
+	if err != nil {
+		t.Fatalf("list OUs with fallback: %v", err)
+	}
+	if len(accounts) != 1 || aws.ToString(accounts[0].Name) != "Legacy account" {
+		t.Fatalf("fallback accounts = %#v", accounts)
+	}
+	if len(organizationalUnits) != 1 || aws.ToString(organizationalUnits[0].Name) != "Legacy OU" {
+		t.Fatalf("fallback OUs = %#v", organizationalUnits)
+	}
+	if listChildrenCalls != 2 {
+		t.Fatalf("ListChildren calls = %d, want 2", listChildrenCalls)
+	}
+}
+
+func TestRicherHierarchyListsDoNotFallBackOnOtherErrors(t *testing.T) {
+	t.Parallel()
+	listChildrenCalls := 0
+	serviceErr := &types.ServiceException{Message: aws.String("unavailable")}
+	client := &fakeOrganizationsClient{
+		listAccountsForParentFn: func(context.Context, *organizations.ListAccountsForParentInput) (*organizations.ListAccountsForParentOutput, error) {
+			return nil, serviceErr
+		},
+		listChildrenFn: func(context.Context, *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+			listChildrenCalls++
+			return &organizations.ListChildrenOutput{}, nil
+		},
+	}
+
+	_, err := listAccountsForParent(context.Background(), client, "r-root")
+	if !errors.Is(err, serviceErr) {
+		t.Fatalf("list accounts error = %v, want service error", err)
+	}
+	if listChildrenCalls != 0 {
+		t.Fatalf("ListChildren called %d times after non-authorization error", listChildrenCalls)
+	}
+}
+
+func TestFullOrganizationUsesListMetadataWithoutDescribeCalls(t *testing.T) {
+	t.Parallel()
+	client := &fakeOrganizationsClient{
+		listAccountsForParentFn: func(context.Context, *organizations.ListAccountsForParentInput) (*organizations.ListAccountsForParentOutput, error) {
+			return &organizations.ListAccountsForParentOutput{Accounts: []types.Account{{
+				Id: aws.String("222222222222"), Name: aws.String("Member"),
+			}}}, nil
+		},
+		listOUsForParentFn: func(context.Context, *organizations.ListOrganizationalUnitsForParentInput) (*organizations.ListOrganizationalUnitsForParentOutput, error) {
+			return &organizations.ListOrganizationalUnitsForParentOutput{}, nil
+		},
+		describeAccountFn: func(context.Context, *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+			return nil, errors.New("unexpected DescribeAccount")
+		},
+		listPoliciesForTargetFn: func(context.Context, *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			return &organizations.ListPoliciesForTargetOutput{}, nil
+		},
+	}
+	root, err := buildOrganizationTree(context.Background(), client, "all", "r-root", "Root", "111111111111")
+	if err != nil {
+		t.Fatalf("build organization: %v", err)
+	}
+	if len(root.Children) != 1 || root.Children[0].Name != "Member" {
+		t.Fatalf("list metadata was not preserved: %#v", root.Children)
+	}
+}
+
+func TestGetAWSAuthStatusOverlapsIdentityAndOrganizationRequests(t *testing.T) {
+	t.Parallel()
+	identityStarted := make(chan struct{})
+	organizationStarted := make(chan struct{})
+	stsClient := &fakeSTSClient{getCallerIdentityFn: func(context.Context, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
+		close(identityStarted)
+		<-organizationStarted
+		return &sts.GetCallerIdentityOutput{
+			Account: aws.String("123456789012"), Arn: aws.String("arn:test"), UserId: aws.String("user"),
+		}, nil
+	}}
+	organizationsClient := &fakeOrganizationsClient{describeOrganizationFn: func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+		close(organizationStarted)
+		<-identityStarted
+		return &organizations.DescribeOrganizationOutput{Organization: &types.Organization{
+			Id: aws.String("o-example"), MasterAccountId: aws.String("123456789012"),
+		}}, nil
+	}}
+	status, err := getAWSAuthStatus(context.Background(), aws.Credentials{Source: "test"}, stsClient, organizationsClient)
+	if err != nil || !status.OK {
+		t.Fatalf("authentication status = %#v, %v", status, err)
+	}
+}
+
+func TestGetAWSAuthStatusFatalOrganizationFailureCancelsAndDrainsIdentity(t *testing.T) {
+	t.Parallel()
+	identityStarted := make(chan struct{})
+	identityReturned := make(chan struct{})
+	stsClient := &fakeSTSClient{getCallerIdentityFn: func(ctx context.Context, _ *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
+		close(identityStarted)
+		<-ctx.Done()
+		close(identityReturned)
+		return nil, ctx.Err()
+	}}
+	retryErr := &awsretry.MaxAttemptsError{Attempt: 4, Err: errors.New("throttled")}
+	organizationsClient := &fakeOrganizationsClient{describeOrganizationFn: func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+		<-identityStarted
+		return nil, retryErr
+	}}
+
+	_, err := getAWSAuthStatus(
+		context.Background(), aws.Credentials{Source: "test"}, stsClient, organizationsClient,
+	)
+	var gotRetryErr *awsretry.MaxAttemptsError
+	if !errors.As(err, &gotRetryErr) {
+		t.Fatalf("authentication error = %v, want retry exhaustion", err)
+	}
+	select {
+	case <-identityReturned:
+	default:
+		t.Fatal("authentication status returned before the canceled identity request drained")
+	}
+}
+
+func TestGetRootAndManagementAccountOverlapsRequests(t *testing.T) {
+	t.Parallel()
+	rootStarted := make(chan struct{})
+	managementStarted := make(chan struct{})
+	client := &fakeOrganizationsClient{
+		listRootsFn: func(context.Context, *organizations.ListRootsInput) (*organizations.ListRootsOutput, error) {
+			close(rootStarted)
+			<-managementStarted
+			return &organizations.ListRootsOutput{Roots: []types.Root{{Id: aws.String("r-root")}}}, nil
+		},
+		describeOrganizationFn: func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+			close(managementStarted)
+			<-rootStarted
+			return &organizations.DescribeOrganizationOutput{Organization: &types.Organization{
+				MasterAccountId: aws.String("123456789012"),
+			}}, nil
+		},
+	}
+	rootID, _, managementID, err := getRootAndManagementAccount(context.Background(), client, true)
+	if err != nil || rootID != "r-root" || managementID != "123456789012" {
+		t.Fatalf("discovery = %q, %q, %v", rootID, managementID, err)
+	}
+}
+
+func TestGetRootAndManagementAccountFailureCancelsAndDrainsRoot(t *testing.T) {
+	t.Parallel()
+	rootStarted := make(chan struct{})
+	rootReturned := make(chan struct{})
+	managementErr := errors.New("management discovery failed")
+	client := &fakeOrganizationsClient{
+		listRootsFn: func(ctx context.Context, _ *organizations.ListRootsInput) (*organizations.ListRootsOutput, error) {
+			close(rootStarted)
+			<-ctx.Done()
+			close(rootReturned)
+			return nil, ctx.Err()
+		},
+		describeOrganizationFn: func(context.Context, *organizations.DescribeOrganizationInput) (*organizations.DescribeOrganizationOutput, error) {
+			<-rootStarted
+			return nil, managementErr
+		},
+	}
+
+	_, _, _, err := getRootAndManagementAccount(context.Background(), client, true)
+	if !errors.Is(err, managementErr) {
+		t.Fatalf("discovery error = %v, want %v", err, managementErr)
+	}
+	select {
+	case <-rootReturned:
+	default:
+		t.Fatal("discovery returned before the canceled root request drained")
+	}
+}
+
+func TestFullOrganizationRunsOUBranchesWithinGlobalBound(t *testing.T) {
+	t.Parallel()
+	const rootID = "r-root"
+	organizationalUnits := make([]types.OrganizationalUnit, 8)
+	for index := range organizationalUnits {
+		id := fmt.Sprintf("ou-root-%08d", index)
+		organizationalUnits[index] = types.OrganizationalUnit{Id: aws.String(id), Name: aws.String(id)}
+	}
+	entered := make(chan struct{}, len(organizationalUnits))
+	release := make(chan struct{})
+	client := &fakeOrganizationsClient{
+		listAccountsForParentFn: func(context.Context, *organizations.ListAccountsForParentInput) (*organizations.ListAccountsForParentOutput, error) {
+			return &organizations.ListAccountsForParentOutput{}, nil
+		},
+		listOUsForParentFn: func(_ context.Context, input *organizations.ListOrganizationalUnitsForParentInput) (*organizations.ListOrganizationalUnitsForParentOutput, error) {
+			if aws.ToString(input.ParentId) == rootID {
+				return &organizations.ListOrganizationalUnitsForParentOutput{OrganizationalUnits: organizationalUnits}, nil
+			}
+			return &organizations.ListOrganizationalUnitsForParentOutput{}, nil
+		},
+		listPoliciesForTargetFn: func(ctx context.Context, input *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			if aws.ToString(input.TargetId) == rootID {
+				return &organizations.ListPoliciesForTargetOutput{}, nil
+			}
+			entered <- struct{}{}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-release:
+				return &organizations.ListPoliciesForTargetOutput{}, nil
+			}
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := buildOrganizationTree(context.Background(), client, "all", rootID, "Root", "999999999999")
+		done <- err
+	}()
+	for range organizationInspectionConcurrency {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("OU traversal did not fill its concurrency bound")
+		}
+	}
+	select {
+	case <-entered:
+		close(release)
+		t.Fatal("OU traversal exceeded its concurrency bound")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("build organization: %v", err)
+	}
+}
+
+func TestBuildAccountPathOverlapsDescriptionWithAncestorDiscovery(t *testing.T) {
+	t.Parallel()
+	const accountID = "123456789012"
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	client := &fakeOrganizationsClient{
+		describeAccountFn: func(ctx context.Context, input *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+			entered <- struct{}{}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-release:
+				return &organizations.DescribeAccountOutput{Account: &types.Account{
+					Id: input.AccountId, Name: aws.String("Application"),
+				}}, nil
+			}
+		},
+		listParentsFn: func(ctx context.Context, _ *organizations.ListParentsInput) (*organizations.ListParentsOutput, error) {
+			entered <- struct{}{}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-release:
+				return &organizations.ListParentsOutput{Parents: []types.Parent{{
+					Id: aws.String("r-root"), Type: types.ParentTypeRoot,
+				}}}, nil
+			}
+		},
+		listPoliciesForTargetFn: func(context.Context, *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+			return &organizations.ListPoliciesForTargetOutput{}, nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := buildAccountPath(
+			context.Background(), client, accountID, "r-root", "999999999999", newOrganizationCache("r-root", "Root"),
+		)
+		done <- err
+	}()
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("account description and ancestor discovery did not overlap")
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("build account path: %v", err)
 	}
 }

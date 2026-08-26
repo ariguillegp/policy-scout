@@ -5,10 +5,12 @@ import (
 	"context"
 	encodingjson "encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
@@ -340,5 +342,57 @@ func TestAWSSearchHelpDocumentsMachineSafeContract(t *testing.T) {
 		if !strings.Contains(output, expected) {
 			t.Errorf("search help missing %q:\n%s", expected, output)
 		}
+	}
+}
+
+func TestOrganizationSearchRunsOUSubtreesWithinBound(t *testing.T) {
+	t.Parallel()
+	const rootID = "r-root"
+	organizationalUnits := make([]types.OrganizationalUnit, 8)
+	for index := range organizationalUnits {
+		id := fmt.Sprintf("ou-root-%08d", index)
+		organizationalUnits[index] = types.OrganizationalUnit{Id: aws.String(id), Name: aws.String(id)}
+	}
+	entered := make(chan struct{}, len(organizationalUnits))
+	release := make(chan struct{})
+	client := &fakeOrganizationsClient{
+		listRootsFn: func(context.Context, *organizations.ListRootsInput) (*organizations.ListRootsOutput, error) {
+			return &organizations.ListRootsOutput{Roots: []types.Root{{Id: aws.String(rootID)}}}, nil
+		},
+		listAccountsForParentFn: func(ctx context.Context, input *organizations.ListAccountsForParentInput) (*organizations.ListAccountsForParentOutput, error) {
+			if aws.ToString(input.ParentId) == rootID {
+				return &organizations.ListAccountsForParentOutput{}, nil
+			}
+			entered <- struct{}{}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-release:
+				return &organizations.ListAccountsForParentOutput{}, nil
+			}
+		},
+		listOUsForParentFn: func(_ context.Context, input *organizations.ListOrganizationalUnitsForParentInput) (*organizations.ListOrganizationalUnitsForParentOutput, error) {
+			if aws.ToString(input.ParentId) == rootID {
+				return &organizations.ListOrganizationalUnitsForParentOutput{OrganizationalUnits: organizationalUnits}, nil
+			}
+			return &organizations.ListOrganizationalUnitsForParentOutput{}, nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := discoverOrganizationEntities(context.Background(), client, "missing", searchAccounts)
+		done <- err
+	}()
+	for range organizationInspectionConcurrency {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("search did not fill its concurrency bound")
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("search organization: %v", err)
 	}
 }
