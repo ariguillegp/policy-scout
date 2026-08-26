@@ -394,9 +394,9 @@ func renderOrganizationSearch(result organizationSearchResult, outputFormat outp
 
 func searchTextType(entityType string) string {
 	if entityType == accountEntityType {
-		return "Account"
+		return accountEntityLabel
 	}
-	return "OU"
+	return organizationalUnitEntityLabel
 }
 
 func searchPathTextName(entity organizationSearchPathEntity) string {
@@ -404,7 +404,7 @@ func searchPathTextName(entity organizationSearchPathEntity) string {
 		return entity.Name
 	}
 	if entity.Type == rootEntityType {
-		return "Root"
+		return rootEntityLabel
 	}
 	return searchTextType(entity.Type)
 }

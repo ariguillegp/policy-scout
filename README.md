@@ -30,8 +30,9 @@ Root [r-cww9]
 - See each target's path from the organization root.
 - Distinguish direct SCP attachments from attachments inherited through ancestors.
 - Identify the management account, whose users and roles are not affected by SCPs.
-- Produce a terminal-friendly tree or stable, structured JSON for automation.
-- Optionally include each unique applicable SCP document once in structured JSON.
+- Produce a terminal-friendly tree, stable JSON for automation, or a standalone
+  HTML report with collapsible accounts, OUs, and SCPs.
+- Optionally include each unique applicable SCP document in JSON or HTML.
 - Print version-matched JSON Schemas locally without AWS credentials or network access.
 
 ## Installation
@@ -107,6 +108,16 @@ JSON is the default output format. Use it explicitly in scripts:
 policy-scout aws --account-id all --output-format json > organization.json
 ```
 
+Create a browser-friendly report where each account, OU, and SCP can be
+expanded to show its attributes:
+
+```bash
+policy-scout aws --account-id all --output-format html > organization.html
+```
+
+Add `--include-policy-documents` to show SCP metadata and documents inside the
+expanded SCP details.
+
 Retrieve the unique applicable SCP documents when they are needed:
 
 ```bash
@@ -157,7 +168,7 @@ policy-scout aws attachments --policy-id p-a1b2c3d4
 # Bound AWS work in CI or another automated environment
 policy-scout aws --account-id all --timeout 30s --max-retries 3
 
-# Include a deduplicated catalog of parsed SCP documents (JSON only)
+# Include parsed SCP documents in JSON schema v2 (also available in HTML reports)
 policy-scout aws --account-id all --include-policy-documents --output-format json
 
 # Print version-matched JSON Schemas without AWS credentials

@@ -1,11 +1,30 @@
 # Output formats and organization JSON contract
 
-Policy Scout supports human-readable text and structured JSON. JSON is the
-default and the stable interface for automation. Text is intended for people
-scanning a terminal, so its wording and layout may improve between releases.
+Policy Scout supports human-readable text, structured JSON, and standalone
+HTML. JSON is the default and the stable interface for automation. Text and
+HTML are intended for people, so their wording and layout may improve between
+releases.
 
-Both formats preserve the same hierarchy, policy identities, attachment
+All formats preserve the same hierarchy, policy identities, attachment
 sources, and deterministic entity and attachment ordering.
+
+## HTML output
+
+HTML output is a self-contained report that can be saved and opened directly in
+a browser. The organization root starts expanded; each account, organizational
+unit, and SCP attachment uses a native collapsible control and reveals its
+attributes when expanded.
+
+For a selected OU, the report explicitly notes that descendants were not
+requested; an empty child list does not imply that the OU has no descendants.
+
+```bash
+policy-scout aws --account-id all --output-format html > organization.html
+```
+
+Use `--include-policy-documents` to include policy descriptions, ARNs,
+AWS-managed status, and formatted policy documents inside each expanded SCP.
+The report has no external assets or network dependencies.
 
 ## Text output
 
@@ -146,10 +165,11 @@ OUs under each parent, and each category is sorted by AWS entity ID.
 
 ## Schema v2 policy catalog
 
-`--include-policy-documents` is available with JSON output and adds a top-level
-`policies` array. It contains each unique policy referenced by applicable
-attachments exactly once, sorted by policy ID. An inspection with no applicable
-policies emits `"policies": []`.
+`--include-policy-documents` is available with JSON and HTML output. In JSON it
+adds a top-level `policies` array and selects schema v2; in HTML it embeds policy
+metadata and documents in the applicable SCP details. The JSON catalog contains
+each unique policy referenced by applicable attachments exactly once, sorted by
+policy ID. An inspection with no applicable policies emits `"policies": []`.
 
 ```json
 {

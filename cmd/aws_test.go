@@ -2427,7 +2427,7 @@ func TestDisplayOrganizationTreeDoesNotEmitPartialDocumentOnTraversalError(t *te
 	t.Parallel()
 
 	const accountID = "123456789012"
-	for _, outputFormat := range []outputFormat{text, json} {
+	for _, outputFormat := range []outputFormat{text, json, html} {
 		outputFormat := outputFormat
 		t.Run(string(outputFormat), func(t *testing.T) {
 			t.Parallel()
@@ -3149,7 +3149,7 @@ func TestDisplayOrganizationTreeTextDoesNotWriteAccountPathOnLateTraversalFailur
 func TestDisplayOrganizationTreeReturnsFinalWriteError(t *testing.T) {
 	t.Parallel()
 
-	for _, outputFormat := range []outputFormat{text, json} {
+	for _, outputFormat := range []outputFormat{text, json, html} {
 		outputFormat := outputFormat
 		t.Run(string(outputFormat), func(t *testing.T) {
 			t.Parallel()
@@ -3169,6 +3169,9 @@ func TestDisplayOrganizationTreeReturnsFinalWriteError(t *testing.T) {
 			}
 			if outputFormat == json && !strings.Contains(err.Error(), "encode organization as JSON") {
 				t.Fatalf("JSON write error lacks operation context: %v", err)
+			}
+			if outputFormat == html && !strings.Contains(err.Error(), "write organization as HTML") {
+				t.Fatalf("HTML write error lacks operation context: %v", err)
 			}
 		})
 	}

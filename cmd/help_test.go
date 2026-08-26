@@ -73,8 +73,8 @@ func TestAWSHelpDocumentsOutputFormatMetavarAndDefault(t *testing.T) {
 		"JSON output is used by default",
 		"Inspect AWS authentication",
 		"Find AWS accounts and OUs by exact name",
-		"--output-format text|json",
-		`"json" or "text"`,
+		"--output-format text|json|html",
+		`"json", "text", or "html"`,
 		"(default json)",
 		"--timeout",
 		"--max-retries",
@@ -170,5 +170,20 @@ func TestOutputFormatCompletionDescribesJSONAndTextBased(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(joined), "in json") {
 		t.Errorf("output format completion uses lowercase \"in json\": %q", joined)
+	}
+}
+
+func TestOrganizationOutputFormatCompletionIncludesHTML(t *testing.T) {
+	t.Parallel()
+
+	completions, directive := organizationOutputFormatCompletion(nil, nil, "")
+	if directive != cobra.ShellCompDirectiveDefault {
+		t.Fatalf("got directive %v, want %v", directive, cobra.ShellCompDirectiveDefault)
+	}
+	joined := strings.Join(completions, "\n")
+	for _, expected := range []string{"html\t", "collapsible standalone HTML page", "json\t", "text\t"} {
+		if !strings.Contains(joined, expected) {
+			t.Errorf("organization output format completion missing %q: %q", expected, joined)
+		}
 	}
 }

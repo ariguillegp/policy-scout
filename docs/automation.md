@@ -63,12 +63,13 @@ fi
 The [organization JSON contract](output.md) documents field presence, ordering,
 and schema compatibility, including the separate AWS entity search document.
 
-`--include-policy-documents` is JSON-only. It adds one `DescribePolicy` request
-per unique applicable policy ID, uses schema v2, and requires
-`organizations:DescribePolicy`. Without it, there are no `DescribePolicy`
-requests, no additional permission or AWS cost, and output remains schema v1.
-As with discovery failures, a policy retrieval or JSON-decoding failure leaves
-stdout empty.
+`--include-policy-documents` works with JSON and HTML output. It adds one
+`DescribePolicy` request per unique applicable policy ID and requires
+`organizations:DescribePolicy`. JSON output uses schema v2 and adds a top-level
+policy catalog; HTML embeds metadata and documents in each applicable SCP's
+details. Without the flag, there are no `DescribePolicy` requests or additional
+permission or AWS cost, and JSON output remains schema v1. As with discovery
+failures, a policy retrieval or document-decoding failure leaves stdout empty.
 
 For agents that need only one target or one known SCP, prefer the focused query
 documents instead of parsing a complete organization tree:

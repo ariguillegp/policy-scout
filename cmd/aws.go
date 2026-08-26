@@ -46,19 +46,45 @@ const (
 )
 
 const (
-	rootEntityType               = "root"
-	accountEntityType            = "account"
-	organizationalUnitEntityType = "organizational_unit"
-	allSelectionType             = "all"
+	rootEntityType                = "root"
+	accountEntityType             = "account"
+	organizationalUnitEntityType  = "organizational_unit"
+	allSelectionType              = "all"
+	rootEntityLabel               = "Root"
+	accountEntityLabel            = "Account"
+	organizationalUnitEntityLabel = "OU"
 )
 
 // Defining a custom enum to restrict output format values.
 type outputFormat string
 
 const (
-	text outputFormat = "text" //nolint:unused
-	json outputFormat = "json" //nolint:unused
+	text = "text"
+	json = "json"
+	html = "html"
 )
+
+// organizationOutputFormat includes the browser-friendly format supported by
+// organization inspections. Other commands retain their text and JSON contract.
+type organizationOutputFormat string
+
+func (e *organizationOutputFormat) String() string {
+	return string(*e)
+}
+
+func (e *organizationOutputFormat) Set(value string) error {
+	switch value {
+	case text, json, html:
+		*e = organizationOutputFormat(value)
+		return nil
+	default:
+		return errors.New(`must be one of "text", "json", or "html"`)
+	}
+}
+
+func (e *organizationOutputFormat) Type() string {
+	return "text|json|html"
+}
 
 // String is used both by fmt.Print and by Cobra in help text.
 func (e *outputFormat) String() string {
@@ -83,6 +109,14 @@ func (e *outputFormat) Type() string {
 
 func outputFormatCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) { //nolint:unused
 	return []string{
+		"json\tdisplays results formatted as JSON",
+		"text\tdisplays results as a text-based tree in your terminal",
+	}, cobra.ShellCompDirectiveDefault
+}
+
+func organizationOutputFormatCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) { //nolint:unused
+	return []string{
+		"html\tdisplays results as a collapsible standalone HTML page",
 		"json\tdisplays results formatted as JSON",
 		"text\tdisplays results as a text-based tree in your terminal",
 	}, cobra.ShellCompDirectiveDefault
@@ -126,7 +160,7 @@ var (
 	accountID              string
 	organizationalUnitID   string
 	includePolicyDocuments bool
-	format                 outputFormat = json
+	format                 organizationOutputFormat = json
 	profile                string
 	authStatusFormat       outputFormat = json
 	awsCmd                              = &cobra.Command{
@@ -139,8 +173,9 @@ ancestors. Inspect one account or OU path, or the entire organization.
 
 JSON output is used by default.
 
-Use --include-policy-documents with JSON output to retrieve each unique
-applicable SCP once in a top-level policy catalog. Policy Scout does not
+Use --include-policy-documents with JSON or HTML output to retrieve each unique
+applicable SCP. JSON includes a top-level policy catalog; HTML includes each
+document in its expandable SCP details. Policy Scout does not
 evaluate SCP Allow/Deny semantics, IAM policies, resource policies, permission boundaries,
 session policies, or effective identity permissions.
 
@@ -159,7 +194,8 @@ AWS SSO login. If SSO credentials are missing or expired, run the suggested
   policy-scout aws --account-id 123456789012 --timeout 30s --max-retries 3
   policy-scout aws --account-id 123456789012 --include-policy-documents --output-format json
   policy-scout aws --account-id all --output-format json > organization.json
-  policy-scout aws --account-id all --output-format text`,
+  policy-scout aws --account-id all --output-format text
+  policy-scout aws --account-id all --output-format html > organization.html`,
 		Args: noArgsValidator,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAWSCommand(cmd)
@@ -201,10 +237,10 @@ func init() {
 
 	awsCmd.Flags().StringVar(&accountID, "account-id", "", `AWS account ID to inspect (exactly 12 digits), or "all" for the entire organization`)
 	awsCmd.Flags().StringVar(&organizationalUnitID, "ou-id", "", "AWS organizational unit ID to inspect")
-	awsCmd.Flags().BoolVar(&includePolicyDocuments, "include-policy-documents", false, "include a deduplicated SCP document catalog in JSON output (requires organizations:DescribePolicy)")
+	awsCmd.Flags().BoolVar(&includePolicyDocuments, "include-policy-documents", false, "include deduplicated SCP documents in JSON or HTML output (requires organizations:DescribePolicy)")
 
-	awsCmd.Flags().VarP(&format, "output-format", "o", `output format: "json" or "text"`)
-	if err := awsCmd.RegisterFlagCompletionFunc("output-format", outputFormatCompletion); err != nil {
+	awsCmd.Flags().VarP(&format, "output-format", "o", `output format: "json", "text", or "html"`)
+	if err := awsCmd.RegisterFlagCompletionFunc("output-format", organizationOutputFormatCompletion); err != nil {
 		panic(err)
 	}
 	addAWSExecutionFlags(awsCmd)
@@ -314,8 +350,8 @@ func runAWSCommand(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	if includePolicyDocuments && format != json {
-		return newInvalidInvocationError(errors.New("--include-policy-documents requires --output-format json"))
+	if includePolicyDocuments && format == text {
+		return newInvalidInvocationError(errors.New("--include-policy-documents requires --output-format json or html"))
 	}
 	err = describeTargetWithPolicyDocuments(ctx, cmd.OutOrStdout(), targetID, profile, includePolicyDocuments, controls.configLoadOptions()...)
 	return controls.explainError(err)
@@ -639,7 +675,7 @@ func describeTargetWithPolicyDocuments(
 		return err
 	}
 	return displayOrganizationTree(
-		ctx, writer, client, targetID, rootID, rootName, managementAccountID, format, includeDocuments,
+		ctx, writer, client, targetID, rootID, rootName, managementAccountID, outputFormat(format), includeDocuments,
 	)
 }
 
@@ -979,9 +1015,9 @@ func inspectOrganizationTarget(
 	writer io.Writer,
 	client organizationsClient,
 	targetID, rootID, rootName string,
-	outputFormat outputFormat,
+	format organizationOutputFormat,
 ) error {
-	return inspectOrganizationTargetWithPolicyDocuments(ctx, writer, client, targetID, rootID, rootName, outputFormat, false)
+	return inspectOrganizationTargetWithPolicyDocuments(ctx, writer, client, targetID, rootID, rootName, format, false)
 }
 
 func inspectOrganizationTargetWithPolicyDocuments(
@@ -989,7 +1025,7 @@ func inspectOrganizationTargetWithPolicyDocuments(
 	writer io.Writer,
 	client organizationsClient,
 	targetID, rootID, rootName string,
-	outputFormat outputFormat,
+	format organizationOutputFormat,
 	includeDocuments bool,
 ) error {
 	managementAccountID := ""
@@ -1000,7 +1036,9 @@ func inspectOrganizationTargetWithPolicyDocuments(
 			return err
 		}
 	}
-	return displayOrganizationTree(ctx, writer, client, targetID, rootID, rootName, managementAccountID, outputFormat, includeDocuments)
+	return displayOrganizationTree(
+		ctx, writer, client, targetID, rootID, rootName, managementAccountID, outputFormat(format), includeDocuments,
+	)
 }
 
 func buildOrganizationTree(
@@ -1480,14 +1518,19 @@ func appendPath(path []string, entityID string) []string {
 
 func writeOrganizationTree(writer io.Writer, root organizationNode, outputFormat outputFormat) error {
 	var document []byte
-	if outputFormat == json {
+	switch outputFormat {
+	case json:
 		encoded, err := renderOrganizationTreeJSON(root)
 		if err != nil {
 			return err
 		}
 		document = encoded
-	} else {
+	case html:
+		document = renderOrganizationTreeHTML(root)
+	case text:
 		document = []byte(renderOrganizationTreeText(root))
+	default:
+		return fmt.Errorf("unsupported organization output format %q", outputFormat)
 	}
 
 	written, err := writer.Write(document)
@@ -1496,6 +1539,9 @@ func writeOrganizationTree(writer io.Writer, root organizationNode, outputFormat
 	}
 	if err != nil && outputFormat == json {
 		return fmt.Errorf("encode organization as JSON: %w", err)
+	}
+	if err != nil && outputFormat == html {
+		return fmt.Errorf("write organization as HTML: %w", err)
 	}
 	return err
 }
@@ -1698,11 +1744,11 @@ func attachmentTargetText(target scpAttachmentTarget) string {
 	typeLabel := "Entity"
 	switch target.Type {
 	case rootEntityType:
-		typeLabel = "Root"
+		typeLabel = rootEntityLabel
 	case organizationalUnitEntityType:
-		typeLabel = "OU"
+		typeLabel = organizationalUnitEntityLabel
 	case accountEntityType:
-		typeLabel = "Account"
+		typeLabel = accountEntityLabel
 	}
 	if target.Name == "" || (target.Type == rootEntityType && strings.EqualFold(target.Name, typeLabel)) {
 		return fmt.Sprintf("%s [%s]", typeLabel, target.ID)
