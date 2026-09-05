@@ -274,6 +274,7 @@ func buildAttachmentsQuery(
 		managementAccountID: managementAccountID,
 		directByID:          directByID,
 		affectedByID:        make(map[string]affectedTarget),
+		accountParentByID:   make(map[string]string),
 	}
 	var reachJobs []organizationTraversalJob
 	if rootAttachment, found := directByID[rootID]; found {
@@ -360,6 +361,7 @@ type attachmentReachCollector struct {
 	managementAccountID string
 	directByID          map[string]scpAttachmentTarget
 	affectedByID        map[string]affectedTarget
+	accountParentByID   map[string]string
 	mu                  sync.Mutex
 }
 
@@ -392,6 +394,18 @@ func (collector *attachmentReachCollector) newJob(
 			collector.mu.Lock()
 			for _, account := range accounts {
 				accountID := aws.ToString(account.Id)
+				if existingParentID, found := collector.accountParentByID[accountID]; found && existingParentID != current.ID {
+					collector.mu.Unlock()
+					firstParentID, secondParentID := existingParentID, current.ID
+					if secondParentID < firstParentID {
+						firstParentID, secondParentID = secondParentID, firstParentID
+					}
+					return nil, fmt.Errorf(
+						"account %s appears under multiple organization parents %s and %s",
+						accountID, firstParentID, secondParentID,
+					)
+				}
+				collector.accountParentByID[accountID] = current.ID
 				if accountID == collector.managementAccountID {
 					continue
 				}

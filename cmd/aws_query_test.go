@@ -266,6 +266,140 @@ func TestAttachmentsQueryFailureWritesNoPartialOutput(t *testing.T) {
 	}
 }
 
+func TestAttachmentsQueryRejectsAccountUnderDifferentOUBranches(t *testing.T) {
+	t.Parallel()
+
+	const (
+		firstOUID  = "ou-root-aaaaaaaa"
+		secondOUID = "ou-root-bbbbbbbb"
+	)
+	tests := []struct {
+		name        string
+		legacy      bool
+		first       string
+		accountID   string
+		accountName string
+	}{
+		{name: "optimized first branch completes first", first: firstOUID, accountID: queryInheritedAccount, accountName: "Member"},
+		{name: "optimized second branch completes first", first: secondOUID, accountID: queryInheritedAccount, accountName: "Member"},
+		{name: "legacy first branch completes first", legacy: true, first: firstOUID, accountID: queryInheritedAccount, accountName: "Member"},
+		{name: "legacy second branch completes first", legacy: true, first: secondOUID, accountID: queryInheritedAccount, accountName: "Member"},
+		{name: "management account first branch completes first", first: firstOUID, accountID: queryManagementAccount, accountName: "Management"},
+		{name: "management account second branch completes first", first: secondOUID, accountID: queryManagementAccount, accountName: "Management"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			releases := map[string]chan struct{}{firstOUID: make(chan struct{}), secondOUID: make(chan struct{})}
+			recorded := map[string]chan struct{}{firstOUID: make(chan struct{}), secondOUID: make(chan struct{})}
+			entered := make(chan struct{}, 2)
+			listAccount := func(ctx context.Context, parentID string) ([]types.Account, error) {
+				entered <- struct{}{}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-releases[parentID]:
+					return []types.Account{{Id: aws.String(test.accountID), Name: aws.String(test.accountName)}}, nil
+				}
+			}
+			accessDenied := &types.AccessDeniedException{Message: aws.String("use legacy hierarchy listing")}
+			client := &fakeOrganizationsClient{
+				listTargetsForPolicyFn: func(context.Context, *organizations.ListTargetsForPolicyInput) (*organizations.ListTargetsForPolicyOutput, error) {
+					return &organizations.ListTargetsForPolicyOutput{Targets: []types.PolicyTargetSummary{
+						{TargetId: aws.String(firstOUID), Name: aws.String("First"), Type: types.TargetTypeOrganizationalUnit},
+						{TargetId: aws.String(secondOUID), Name: aws.String("Second"), Type: types.TargetTypeOrganizationalUnit},
+					}}, nil
+				},
+				listPoliciesForTargetFn: func(context.Context, *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error) {
+					return &organizations.ListPoliciesForTargetOutput{Policies: []types.PolicySummary{{
+						Id: aws.String(queryPolicyID), Name: aws.String("Guardrail"), Type: types.PolicyTypeServiceControlPolicy,
+					}}}, nil
+				},
+				listParentsFn: func(context.Context, *organizations.ListParentsInput) (*organizations.ListParentsOutput, error) {
+					return &organizations.ListParentsOutput{Parents: []types.Parent{{
+						Id: aws.String(queryRootID), Type: types.ParentTypeRoot,
+					}}}, nil
+				},
+				listAccountsForParentFn: func(ctx context.Context, input *organizations.ListAccountsForParentInput) (*organizations.ListAccountsForParentOutput, error) {
+					if test.legacy {
+						return nil, accessDenied
+					}
+					accounts, err := listAccount(ctx, aws.ToString(input.ParentId))
+					return &organizations.ListAccountsForParentOutput{Accounts: accounts}, err
+				},
+				listOUsForParentFn: func(_ context.Context, input *organizations.ListOrganizationalUnitsForParentInput) (*organizations.ListOrganizationalUnitsForParentOutput, error) {
+					close(recorded[aws.ToString(input.ParentId)])
+					if test.legacy {
+						return nil, accessDenied
+					}
+					return &organizations.ListOrganizationalUnitsForParentOutput{}, nil
+				},
+				listChildrenFn: func(ctx context.Context, input *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error) {
+					if input.ChildType == types.ChildTypeOrganizationalUnit {
+						return &organizations.ListChildrenOutput{}, nil
+					}
+					accounts, err := listAccount(ctx, aws.ToString(input.ParentId))
+					if err != nil {
+						return nil, err
+					}
+					return &organizations.ListChildrenOutput{Children: []types.Child{{
+						Id: accounts[0].Id, Type: types.ChildTypeAccount,
+					}}}, nil
+				},
+				describeAccountFn: func(context.Context, *organizations.DescribeAccountInput) (*organizations.DescribeAccountOutput, error) {
+					return &organizations.DescribeAccountOutput{Account: &types.Account{
+						Id: aws.String(test.accountID), Name: aws.String(test.accountName),
+					}}, nil
+				},
+			}
+
+			var output bytes.Buffer
+			done := make(chan error, 1)
+			go func() {
+				done <- displayAttachmentsQuery(
+					context.Background(), &output, client, queryPolicyID,
+					queryRootID, "Root", queryManagementAccount, json,
+				)
+			}()
+			for range 2 {
+				select {
+				case <-entered:
+				case <-time.After(5 * time.Second):
+					t.Fatal("both OU branches did not begin account listing")
+				}
+			}
+			close(releases[test.first])
+			select {
+			case <-recorded[test.first]:
+			case <-time.After(5 * time.Second):
+				t.Fatal("first OU branch did not record its account")
+			}
+			second := firstOUID
+			if test.first == firstOUID {
+				second = secondOUID
+			}
+			close(releases[second])
+
+			select {
+			case err := <-done:
+				want := fmt.Sprintf(
+					"account %s appears under multiple organization parents %s and %s",
+					test.accountID, firstOUID, secondOUID,
+				)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %v, want %q", err, want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("attachment query did not finish")
+			}
+			if output.Len() != 0 {
+				t.Fatalf("stdout contains partial result: %q", output.String())
+			}
+		})
+	}
+}
+
 func TestPoliciesQueryFailureWritesNoPartialOutput(t *testing.T) {
 	t.Parallel()
 
