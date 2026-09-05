@@ -291,19 +291,19 @@ func writeError(writer io.Writer, diagnostic classifiedError, format errorFormat
 		return encodingjson.NewEncoder(writer).Encode(diagnostic)
 	}
 
-	if _, err := fmt.Fprintf(writer, "Error [%s]: %s\n", diagnostic.Code, diagnostic.Message); err != nil {
+	if _, err := fmt.Fprintf(writer, "Error [%s]: %s\n", displayText(diagnostic.Code), displayText(diagnostic.Message)); err != nil {
 		return err
 	}
 	if diagnostic.Operation != "" {
-		if _, err := fmt.Fprintf(writer, "Operation: %s\n", diagnostic.Operation); err != nil {
+		if _, err := fmt.Fprintf(writer, "Operation: %s\n", displayText(diagnostic.Operation)); err != nil {
 			return err
 		}
 	}
 	if diagnostic.RequestID != "" {
-		if _, err := fmt.Fprintf(writer, "AWS request ID: %s\n", diagnostic.RequestID); err != nil {
+		if _, err := fmt.Fprintf(writer, "AWS request ID: %s\n", displayText(diagnostic.RequestID)); err != nil {
 			return err
 		}
 	}
-	_, err := fmt.Fprintf(writer, "Remediation: %s\n", diagnostic.Remediation)
+	_, err := fmt.Fprintf(writer, "Remediation: %s\n", displayText(diagnostic.Remediation))
 	return err
 }

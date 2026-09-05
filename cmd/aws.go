@@ -589,18 +589,21 @@ func writeAWSAuthStatus(writer io.Writer, status awsAuthStatus, outputFormat out
 		if err := writeOutput(writer, "AWS credentials: valid\n"); err != nil {
 			return err
 		}
-		if err := writeOutput(writer, "Identity: %s\nAccount: %s\nCredential source: %s\n", status.Identity.ARN, status.Identity.AccountID, status.Credentials.Source); err != nil {
+		if err := writeOutput(writer, "Identity: %s\nAccount: %s\nCredential source: %s\n",
+			displayText(status.Identity.ARN), displayText(status.Identity.AccountID), displayText(status.Credentials.Source)); err != nil {
 			return err
 		}
 		if status.Credentials.CanExpire {
-			if err := writeOutput(writer, "Expires: %s\n", status.Credentials.ExpiresAt); err != nil {
+			if err := writeOutput(writer, "Expires: %s\n", displayText(status.Credentials.ExpiresAt)); err != nil {
 				return err
 			}
 		}
 		if status.Organizations.Accessible {
-			return writeOutput(writer, "AWS Organizations: accessible\nOrganization: %s\nManagement account: %s\n", status.Organizations.OrganizationID, status.Organizations.ManagementAccountID)
+			return writeOutput(writer, "AWS Organizations: accessible\nOrganization: %s\nManagement account: %s\n",
+				displayText(status.Organizations.OrganizationID), displayText(status.Organizations.ManagementAccountID))
 		}
-		return writeOutput(writer, "AWS Organizations: not accessible\nError: %s\nMessage: %s\n", status.Organizations.Error, status.Organizations.Message)
+		return writeOutput(writer, "AWS Organizations: not accessible\nError: %s\nMessage: %s\n",
+			displayText(status.Organizations.Error), displayText(status.Organizations.Message))
 	}
 
 	status.SchemaVersion = authStatusJSONSchemaVersion
@@ -1616,7 +1619,7 @@ func renderOrganizationTreeText(root organizationNode) string {
 	if root.Selection.Type == allSelectionType {
 		output.WriteString("Full organization\n")
 	} else if target := findOrganizationNode(root, root.Selection.TargetID); target != nil {
-		fmt.Fprintf(&output, "Organization path to %s\n", organizationTextLabel(*target))
+		fmt.Fprintf(&output, "Organization path to %s\n", displayText(organizationTextLabel(*target)))
 	} else {
 		output.WriteString("Organization path\n")
 	}
@@ -1637,7 +1640,7 @@ func findOrganizationNode(node organizationNode, targetID string) *organizationN
 }
 
 func renderOrganizationTextNode(output *strings.Builder, node organizationNode, prefix string, last, root bool) {
-	label := organizationTextLabel(node)
+	label := displayText(organizationTextLabel(node))
 	childPrefix := prefix
 	if root {
 		fmt.Fprintln(output, label)
@@ -1678,7 +1681,11 @@ func renderOrganizationTextNode(output *strings.Builder, node organizationNode, 
 			renderedChildren++
 			policies := "none"
 			if len(node.SCPs) > 0 {
-				policies = strings.Join(node.SCPs, ", ")
+				displayPolicies := make([]string, len(node.SCPs))
+				for index, policy := range node.SCPs {
+					displayPolicies[index] = displayText(policy)
+				}
+				policies = strings.Join(displayPolicies, ", ")
 			}
 			renderOrganizationTextLine(
 				output,
@@ -1728,13 +1735,13 @@ func organizationTextLabel(node organizationNode) string {
 }
 
 func scpAttachmentText(attachment scpAttachment) string {
-	text := fmt.Sprintf("SCP %s [%s] — direct", attachment.PolicyName, attachment.PolicyID)
+	text := fmt.Sprintf("SCP %s [%s] — direct", displayText(attachment.PolicyName), displayText(attachment.PolicyID))
 	if attachment.Inherited {
 		text = fmt.Sprintf(
 			"SCP %s [%s] — inherited from %s",
-			attachment.PolicyName,
-			attachment.PolicyID,
-			attachmentTargetText(attachment.AttachedTo),
+			displayText(attachment.PolicyName),
+			displayText(attachment.PolicyID),
+			displayText(attachmentTargetText(attachment.AttachedTo)),
 		)
 	}
 	return text

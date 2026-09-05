@@ -545,10 +545,10 @@ func queryTargetLess(left, right queryTarget) bool {
 func writePoliciesQuery(writer io.Writer, result policiesQueryResult, outputFormat outputFormat) error {
 	if outputFormat == text {
 		var output strings.Builder
-		fmt.Fprintf(&output, "Target: %s\n", attachmentTargetText(scpAttachmentTarget{Type: result.Target.Type, ID: result.Target.ID, Name: result.Target.Name}))
+		fmt.Fprintf(&output, "Target: %s\n", displayText(attachmentTargetText(scpAttachmentTarget{Type: result.Target.Type, ID: result.Target.ID, Name: result.Target.Name})))
 		path := make([]string, len(result.Path))
 		for index, target := range result.Path {
-			path[index] = attachmentTargetText(target)
+			path[index] = displayText(attachmentTargetText(target))
 		}
 		fmt.Fprintf(&output, "Path: %s\n", strings.Join(path, " > "))
 		switch {
@@ -570,16 +570,16 @@ func writeAttachmentsQuery(writer io.Writer, result attachmentsQueryResult, outp
 	if outputFormat == text {
 		var output strings.Builder
 		if result.PolicyName == "" {
-			fmt.Fprintf(&output, "SCP [%s]\n", result.PolicyID)
+			fmt.Fprintf(&output, "SCP [%s]\n", displayText(result.PolicyID))
 		} else {
-			fmt.Fprintf(&output, "SCP %s [%s]\n", result.PolicyName, result.PolicyID)
+			fmt.Fprintf(&output, "SCP %s [%s]\n", displayText(result.PolicyName), displayText(result.PolicyID))
 		}
 		if len(result.DirectTargets) == 0 {
 			output.WriteString("Direct attachments: none\n")
 		} else {
 			output.WriteString("Direct attachments:\n")
 			for _, target := range result.DirectTargets {
-				label := attachmentTargetText(scpAttachmentTarget{Type: target.Type, ID: target.ID, Name: target.Name})
+				label := displayText(attachmentTargetText(scpAttachmentTarget{Type: target.Type, ID: target.ID, Name: target.Name}))
 				if !target.SCPApplicable {
 					label += " (management account; not affected)"
 				}
@@ -591,7 +591,7 @@ func writeAttachmentsQuery(writer io.Writer, result attachmentsQueryResult, outp
 		} else {
 			output.WriteString("Affected targets:\n")
 			for _, affected := range result.AffectedTargets {
-				fmt.Fprintf(&output, "- %s\n", attachmentTargetText(scpAttachmentTarget{Type: affected.Target.Type, ID: affected.Target.ID, Name: affected.Target.Name}))
+				fmt.Fprintf(&output, "- %s\n", displayText(attachmentTargetText(scpAttachmentTarget{Type: affected.Target.Type, ID: affected.Target.ID, Name: affected.Target.Name})))
 			}
 		}
 		return writeDocument(writer, []byte(output.String()), "attachments query")

@@ -374,15 +374,15 @@ func renderOrganizationSearch(result organizationSearchResult, outputFormat outp
 		return append(encoded, '\n'), nil
 	case text:
 		var output strings.Builder
-		fmt.Fprintf(&output, "Exact matches for %q: %d\n", result.Query.Name, len(result.Matches))
+		fmt.Fprintf(&output, "Exact matches for \"%s\": %d\n", displayText(result.Query.Name), len(result.Matches))
 		for _, match := range result.Matches {
-			fmt.Fprintf(&output, "%s %s [%s]\n", searchTextType(match.Type), match.Name, match.ID)
+			fmt.Fprintf(&output, "%s %s [%s]\n", searchTextType(match.Type), displayText(match.Name), displayText(match.ID))
 			output.WriteString("  Path: ")
 			for index, entity := range match.Path {
 				if index > 0 {
 					output.WriteString(" / ")
 				}
-				fmt.Fprintf(&output, "%s [%s]", searchPathTextName(entity), entity.ID)
+				fmt.Fprintf(&output, "%s [%s]", displayText(searchPathTextName(entity)), displayText(entity.ID))
 			}
 			output.WriteByte('\n')
 		}
