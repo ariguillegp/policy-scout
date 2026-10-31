@@ -23,6 +23,8 @@ Root [r-cww9]
 > Policy Scout lists names from SCP summaries and can optionally retrieve SCP
 > documents. It does not evaluate SCP Allow/Deny semantics, IAM policies, resource
 > policies, permission boundaries, session policies, or effective permissions.
+> `aws lint` inspects SCP statements only for specific elements, such as an
+> `Allow` statement that uses `NotAction`.
 
 ## Features
 
@@ -33,6 +35,9 @@ Root [r-cww9]
 - Produce a terminal-friendly tree, stable JSON for automation, or a standalone
   HTML report with collapsible accounts, OUs, and SCPs.
 - Optionally include each unique applicable SCP document in JSON or HTML.
+- Lint SCP hygiene across the organization: unattached SCPs, targets and
+  documents near AWS limits, redundant inherited attachments, `Allow` with
+  `NotAction` or `NotResource`, and more, with an opt-in CI exit status.
 - Print version-matched JSON Schemas locally without AWS credentials or network access.
 
 ## Installation
@@ -165,6 +170,10 @@ policy-scout aws policies --ou-id ou-cww9-x2atbcle
 # Find direct and inherited reach for one exact SCP ID
 policy-scout aws attachments --policy-id p-a1b2c3d4
 
+# Report SCP hygiene findings; exit 6 when any finding is medium or high
+policy-scout aws lint --output-format text
+policy-scout aws lint --fail-on medium
+
 # Bound AWS work in CI or another automated environment
 policy-scout aws --account-id all --timeout 30s --max-retries 3
 
@@ -179,6 +188,7 @@ policy-scout schema error
 policy-scout schema search
 policy-scout schema policies
 policy-scout schema attachments
+policy-scout schema lint
 
 # Discover the binary and published JSON Schema versions
 policy-scout version
@@ -197,9 +207,10 @@ Run `policy-scout aws search --help` for its complete contract and examples.
 Published schemas use JSON Schema Draft 2020-12 and are embedded in release
 binaries, so schema discovery performs no network access. Validate output with
 the schema emitted by the same binary version. Formal schemas cover both
-organization versions, auth-status, structured errors, entity search, and both
-focused queries. Each document carries its own `schema_version`; consumers must
-tolerate additive object fields within a schema version.
+organization versions, auth-status, structured errors, entity search, both
+focused queries, and the SCP lint report. Each document carries its own
+`schema_version`; consumers must tolerate additive object fields within a
+schema version.
 
 ## Required AWS permissions
 
@@ -221,8 +232,10 @@ requested:
   or `aws attachments`
 - `organizations:ListParents`
 - `organizations:ListPoliciesForTarget`
-- `organizations:DescribePolicy` only with `--include-policy-documents`
+- `organizations:DescribePolicy` with `--include-policy-documents` or for `aws
+  lint`
 - `organizations:ListTargetsForPolicy` for `aws attachments`
+- `organizations:ListPolicies` for `aws lint`
 
 `aws search` always needs `ListRoots` plus OU traversal permission:
 `ListOrganizationalUnitsForParent`, or `ListChildren` with
@@ -238,6 +251,12 @@ legacy fallback permissions for descendants encountered in those scopes. A
 policy attached only to accounts does not require descendant traversal. AWS
 permits `ListTargetsForPolicy` only from the management account or an
 Organizations delegated administrator.
+
+`aws lint` traverses the entire organization, so it needs `ListRoots`,
+`DescribeOrganization`, the parent-list permissions (or the legacy fallback
+permissions), and `ListPoliciesForTarget`, plus `ListPolicies` and
+`DescribePolicy` to read every SCP document. It does not call `ListParents` or
+`ListTargetsForPolicy`.
 
 ## Documentation
 

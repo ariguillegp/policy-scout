@@ -170,6 +170,16 @@ func TestInvalidInvocationsUseStderrAndStableExitStatuses(t *testing.T) {
 			wantCode: "invalid_invocation", wantMessagePart: "--policy-id",
 		},
 		{
+			name: "lint invalid fail-on severity",
+			args: []string{"aws", "lint", "--fail-on", "critical"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--fail-on",
+		},
+		{
+			name: "lint non-positive size limit",
+			args: []string{"aws", "lint", "--policy-size-limit", "0"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--policy-size-limit",
+		},
+		{
 			// Extra positional arguments to version are classified as invalid_invocation,
 			// matching root, aws, and aws auth status.
 			name: "extra version positional argument", args: []string{"version", "extra"}, wantStatus: 2,
@@ -224,6 +234,7 @@ func TestVersionTextAndJSON(t *testing.T) {
 			SearchSchemaVersion        string   `json:"search_schema_version"`
 			PoliciesSchemaVersion      string   `json:"policies_schema_version"`
 			AttachmentsSchemaVersion   string   `json:"attachments_schema_version"`
+			LintSchemaVersion          string   `json:"lint_schema_version"`
 		}
 		if err := json.Unmarshal([]byte(result.stdout), &info); err != nil {
 			t.Fatalf("stdout is not version JSON: %q: %v", result.stdout, err)
@@ -232,7 +243,7 @@ func TestVersionTextAndJSON(t *testing.T) {
 			!reflect.DeepEqual(info.OrganizationSchemaVersions, []string{"1", "2"}) ||
 			info.AuthStatusSchemaVersion != "1" || info.ErrorSchemaVersion != "1" ||
 			info.SearchSchemaVersion != "1" || info.PoliciesSchemaVersion != "1" ||
-			info.AttachmentsSchemaVersion != "1" {
+			info.AttachmentsSchemaVersion != "1" || info.LintSchemaVersion != "1" {
 			t.Fatalf("version JSON = %#v, want version %q, organization schemas [1 2], and all other schemas at 1", info, contractTestVersion)
 		}
 	})
@@ -247,6 +258,7 @@ func TestSchemaCommandsAreLocalAndPublishStableSchemas(t *testing.T) {
 		"search":          "https://policy-scout.dev/schemas/search/v1",
 		"policies":        "https://policy-scout.dev/schemas/policies/v1",
 		"attachments":     "https://policy-scout.dev/schemas/attachments/v1",
+		"lint":            "https://policy-scout.dev/schemas/lint/v1",
 	}
 	for name, wantID := range wantIDs {
 		t.Run(name, func(t *testing.T) {

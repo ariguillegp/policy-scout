@@ -31,6 +31,7 @@ func init() {
 	addSchemaCommand("search", "Print the AWS entity-search result JSON Schema", "schemas/search-v1.json")
 	addSchemaCommand("policies", "Print the focused policies-query result JSON Schema", "schemas/policies-v1.json")
 	addSchemaCommand("attachments", "Print the focused attachments-query result JSON Schema", "schemas/attachments-v1.json")
+	addSchemaCommand("lint", "Print the SCP lint report JSON Schema", "schemas/lint-v1.json")
 }
 
 func addSchemaCommand(name, short, path string) {

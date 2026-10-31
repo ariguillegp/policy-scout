@@ -58,6 +58,7 @@ type fakeOrganizationsClient struct {
 	listChildrenFn             func(context.Context, *organizations.ListChildrenInput) (*organizations.ListChildrenOutput, error)
 	listOUsForParentFn         func(context.Context, *organizations.ListOrganizationalUnitsForParentInput) (*organizations.ListOrganizationalUnitsForParentOutput, error)
 	listParentsFn              func(context.Context, *organizations.ListParentsInput) (*organizations.ListParentsOutput, error)
+	listPoliciesFn             func(context.Context, *organizations.ListPoliciesInput) (*organizations.ListPoliciesOutput, error)
 	listPoliciesForTargetFn    func(context.Context, *organizations.ListPoliciesForTargetInput) (*organizations.ListPoliciesForTargetOutput, error)
 	listRootsFn                func(context.Context, *organizations.ListRootsInput) (*organizations.ListRootsOutput, error)
 	listTargetsForPolicyFn     func(context.Context, *organizations.ListTargetsForPolicyInput) (*organizations.ListTargetsForPolicyOutput, error)
@@ -143,6 +144,17 @@ func (fake *fakeOrganizationsClient) ListParents(
 		return &organizations.ListParentsOutput{}, nil
 	}
 	return fake.listParentsFn(ctx, input)
+}
+
+func (fake *fakeOrganizationsClient) ListPolicies(
+	ctx context.Context,
+	input *organizations.ListPoliciesInput,
+	_ ...func(*organizations.Options),
+) (*organizations.ListPoliciesOutput, error) {
+	if fake.listPoliciesFn == nil {
+		return nil, errors.New("unexpected ListPolicies call")
+	}
+	return fake.listPoliciesFn(ctx, input)
 }
 
 func (fake *fakeOrganizationsClient) ListPoliciesForTarget(

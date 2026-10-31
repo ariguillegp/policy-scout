@@ -99,6 +99,7 @@ func TestPublishedSchemasUseDraft202012AndStableIdentity(t *testing.T) {
 		"schemas/search-v1.json":       "https://policy-scout.dev/schemas/search/v1",
 		"schemas/policies-v1.json":     "https://policy-scout.dev/schemas/policies/v1",
 		"schemas/attachments-v1.json":  "https://policy-scout.dev/schemas/attachments/v1",
+		"schemas/lint-v1.json":         "https://policy-scout.dev/schemas/lint/v1",
 	}
 	for path, wantID := range wantIDs {
 		document, err := schemaFiles.ReadFile(path)
@@ -278,6 +279,45 @@ func TestFocusedQuerySchemasValidateProducerVariants(t *testing.T) {
 	assertValidDocument(t, attachmentsSchema, `{"schema_version":"1","policy_id":"p-unknown1","policy_name":"","direct_targets":[],"affected_targets":[]}`)
 	assertInvalidDocument(t, attachmentsSchema, `{"schema_version":"1","policy_id":"p-policy1","policy_name":"","direct_targets":[{"type":"root","id":"r-root","name":"Root","scp_applicable":true}],"affected_targets":[]}`)
 	assertInvalidDocument(t, attachmentsSchema, `{"schema_version":"1","policy_id":"p-policy1","policy_name":"Guardrail","direct_targets":[],"affected_targets":[{"target":{"type":"account","id":"111111111111","name":"Management","management_account":true,"scp_applicable":false},"provenance":[{"attached_to":{"type":"account","id":"111111111111","name":"Management"},"inherited":false}]}]}`)
+}
+
+func TestLintSchemaValidatesProducerAndRejectsContractDrift(t *testing.T) {
+	t.Parallel()
+	schema := compilePublishedSchema(t, "schemas/lint-v1.json")
+	report := buildLintFixtureReport(t, newLintFixture())
+	var output bytes.Buffer
+	if err := writeLintReport(&output, report, json); err != nil {
+		t.Fatalf("write lint report: %v", err)
+	}
+	if err := validateJSONDocument(t, schema, output.Bytes()); err != nil {
+		t.Fatalf("producer output does not satisfy lint schema: %v\n%s", err, output.String())
+	}
+	assertFieldsDeclared(t, "schemas/lint-v1.json", "", output.Bytes())
+	for _, finding := range report.Findings {
+		encoded, err := encodingjson.Marshal(finding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertFieldsDeclared(t, "schemas/lint-v1.json", "finding", encoded)
+		evidence, err := encodingjson.Marshal(finding.Evidence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertFieldsDeclared(t, "schemas/lint-v1.json", "evidence", evidence)
+	}
+
+	const header = `{"schema_version":"1","root":{"type":"root","id":"r-root"},"limits":{"policies_per_target":10,"policy_document_characters":10240},"checks":["unattached_policy"],"summary":{"total":0,"high":0,"medium":0,"low":0},"findings":`
+	assertValidDocument(t, schema, header+`[]}`)
+	for _, invalid := range []string{
+		header + `[{"check":"unknown_check","severity":"low","message":"m","rationale":"r","evidence":{}}]}`,
+		header + `[{"check":"attachment_limit","severity":"medium","message":"m","rationale":"r","target":{"type":"root","id":"r-root"},"evidence":{}}]}`,
+		header + `[{"check":"allow_not_action","severity":"medium","message":"m","rationale":"r","policy":{"id":"p-policy01","name":"P","aws_managed":false},"evidence":{}}]}`,
+		header + `[{"check":"redundant_attachment","severity":"low","message":"m","rationale":"r","target":{"type":"root","id":"r-root"},"policy":{"id":"p-policy01","name":"P","aws_managed":false},"evidence":{"inherited_from":[{"type":"root","id":"r-root"}]}}]}`,
+		header + `[{"check":"unattached_policy","severity":"high","message":"m","rationale":"r","policy":{"id":"p-policy01","name":"P","aws_managed":false},"evidence":{}}]}`,
+		`{"schema_version":"1","root":{"type":"account","id":"111111111111"},"limits":{"policies_per_target":10,"policy_document_characters":10240},"checks":[],"summary":{"total":0,"high":0,"medium":0,"low":0},"findings":[]}`,
+	} {
+		assertInvalidDocument(t, schema, invalid)
+	}
 }
 
 func TestAuthStatusSchemaValidatesProducerAndFailureVariant(t *testing.T) {

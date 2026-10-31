@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://policy-scout.dev/schemas/lint/v1",
+  "title": "Policy Scout SCP lint report schema v1",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "root": {
+      "allOf": [{ "$ref": "#/$defs/entity" }],
+      "properties": { "type": { "const": "root" } }
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "policies_per_target": { "type": "integer", "minimum": 1 },
+        "policy_document_characters": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["policies_per_target", "policy_document_characters"]
+    },
+    "checks": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "high": { "type": "integer", "minimum": 0 },
+        "medium": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["total", "high", "medium", "low"]
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    }
+  },
+  "required": ["schema_version", "root", "limits", "checks", "summary", "findings"],
+  "$defs": {
+    "check": {
+      "enum": [
+        "unattached_policy",
+        "attachment_limit",
+        "policy_size_limit",
+        "redundant_attachment",
+        "allow_not_action",
+        "allow_not_resource",
+        "root_account_full_access_only",
+        "management_account_attachment",
+        "duplicate_policy_document"
+      ]
+    },
+    "entity": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["root", "organizational_unit", "account"] },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" }
+      },
+      "required": ["type", "id"]
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "aws_managed": { "type": "boolean" }
+      },
+      "required": ["id", "name", "aws_managed"]
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "attached_policy_count": { "type": "integer", "minimum": 1 },
+        "attached_policies": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/policy" }
+        },
+        "document_characters": { "type": "integer", "minimum": 1 },
+        "limit": { "type": "integer", "minimum": 1 },
+        "statement_index": { "type": "integer", "minimum": 0 },
+        "statement_sid": { "type": "string", "minLength": 1 },
+        "inherited_from": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/entity" }
+        },
+        "duplicate_policies": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/policy" }
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "properties": {
+        "check": { "$ref": "#/$defs/check" },
+        "severity": { "enum": ["high", "medium", "low"] },
+        "message": { "type": "string", "minLength": 1 },
+        "rationale": { "type": "string", "minLength": 1 },
+        "target": { "$ref": "#/$defs/entity" },
+        "policy": { "$ref": "#/$defs/policy" },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["check", "severity", "message", "rationale", "evidence"],
+      "allOf": [
+        {
+          "if": { "properties": { "check": { "const": "attachment_limit" } } },
+          "then": {
+            "required": ["target"],
+            "not": { "required": ["policy"] },
+            "properties": {
+              "severity": { "enum": ["medium", "low"] },
+              "evidence": { "required": ["attached_policy_count", "attached_policies", "limit"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "check": { "const": "policy_size_limit" } } },
+          "then": {
+            "required": ["policy"],
+            "not": { "required": ["target"] },
+            "properties": {
+              "severity": { "enum": ["medium", "low"] },
+              "evidence": { "required": ["document_characters", "limit"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "check": { "enum": ["allow_not_action", "allow_not_resource"] } } },
+          "then": {
+            "required": ["policy"],
+            "not": { "required": ["target"] },
+            "properties": {
+              "severity": { "const": "medium" },
+              "evidence": { "required": ["statement_index"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "check": { "const": "redundant_attachment" } } },
+          "then": {
+            "required": ["target", "policy"],
+            "properties": {
+              "severity": { "const": "low" },
+              "target": { "properties": { "type": { "enum": ["organizational_unit", "account"] } } },
+              "evidence": { "required": ["inherited_from"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "check": { "const": "unattached_policy" } } },
+          "then": {
+            "required": ["policy"],
+            "not": { "required": ["target"] },
+            "properties": { "severity": { "const": "low" } }
+          }
+        },
+        {
+          "if": { "properties": { "check": { "const": "duplicate_policy_document" } } },
+          "then": {
+            "required": ["policy"],
+            "not": { "required": ["target"] },
+            "properties": {
+              "severity": { "const": "low" },
+              "evidence": { "required": ["duplicate_policies"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "check": { "const": "root_account_full_access_only" } } },
+          "then": {
+            "required": ["target"],
+            "not": { "required": ["policy"] },
+            "properties": {
+              "severity": { "const": "high" },
+              "target": { "properties": { "type": { "const": "account" } } }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "check": { "const": "management_account_attachment" } } },
+          "then": {
+            "required": ["target", "policy"],
+            "properties": {
+              "severity": { "const": "low" },
+              "target": { "properties": { "type": { "const": "account" } } }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

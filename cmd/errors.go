@@ -21,6 +21,9 @@ const (
 	exitCredentials   = 3
 	exitAuthorization = 4
 	exitTransient     = 5
+	// exitFindings is not a failure: aws lint wrote its complete report and
+	// found at least one finding at or above the --fail-on severity.
+	exitFindings = 6
 )
 
 const (

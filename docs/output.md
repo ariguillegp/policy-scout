@@ -526,3 +526,131 @@ output. JSON is the stable automation contract. Within a query schema version,
 consumers must tolerate additive object fields. Removing or renaming fields,
 changing their types or meanings, or restructuring one query document requires
 a new schema version for that query.
+
+## SCP lint report
+
+`policy-scout aws lint` traverses the entire organization, lists every SCP with
+`ListPolicies`, retrieves each document with `DescribePolicy`, and reports
+mechanical SCP hygiene findings. It does not evaluate effective permissions:
+each check inspects attachment locations, counts, sizes, or the presence of
+specific policy elements, and every finding is explainable from the report
+alone.
+
+```bash
+policy-scout aws lint --output-format json
+policy-scout aws lint --output-format text
+```
+
+The report is versioned independently with `"schema_version": "1"`. Print its
+Draft 2020-12 schema, canonical identifier
+`https://policy-scout.dev/schemas/lint/v1`, with `policy-scout schema lint`;
+`policy-scout version --output-format json` exposes `lint_schema_version`.
+
+### Checks
+
+| Check | Severity | Reported when |
+| --- | --- | --- |
+| `root_account_full_access_only` | high | A member account directly under the root has no applicable SCP other than `FullAWSAccess`. |
+| `allow_not_action` | medium | An `Allow` statement uses `NotAction`. One finding per statement. |
+| `allow_not_resource` | medium | An `Allow` statement uses `NotResource`. One finding per statement. |
+| `attachment_limit` | medium at the limit, low near it | A root, OU, or account has at least 80% of the allowed directly attached SCPs. Inherited SCPs do not count, as in AWS. |
+| `policy_size_limit` | medium at the limit, low near it | An SCP document has at least 80% of the allowed characters. Every character, including whitespace, counts. |
+| `redundant_attachment` | low | A deny-only SCP is attached directly to an OU or account and also inherited from an ancestor. |
+| `duplicate_policy_document` | low | Two or more SCPs have identical documents after ignoring whitespace and object key order. |
+| `management_account_attachment` | low | An SCP other than `FullAWSAccess` is attached directly to the management account, where SCPs have no effect. |
+| `unattached_policy` | low | An SCP is not attached to any root, OU, or account. |
+
+`redundant_attachment` deliberately ignores SCPs that contain any `Allow`
+statement. An action must be allowed by an SCP at every level from the root to
+the account, so `FullAWSAccess` or an allow-list repeated at each level is
+required rather than redundant.
+
+The limits default to the current AWS Organizations hard quotas: 10 directly
+attached SCPs per root, OU, or account, and 10,240 characters per SCP. Override
+them with `--policies-per-target-limit` and `--policy-size-limit` if AWS changes
+these quotas. The values used are echoed in `limits`.
+
+### Document
+
+```json
+{
+  "schema_version": "1",
+  "root": {
+    "type": "root",
+    "id": "r-cww9",
+    "name": "Root"
+  },
+  "limits": {
+    "policies_per_target": 10,
+    "policy_document_characters": 10240
+  },
+  "checks": [
+    "unattached_policy",
+    "attachment_limit",
+    "policy_size_limit",
+    "redundant_attachment",
+    "allow_not_action",
+    "allow_not_resource",
+    "root_account_full_access_only",
+    "management_account_attachment",
+    "duplicate_policy_document"
+  ],
+  "summary": {
+    "total": 1,
+    "high": 0,
+    "medium": 0,
+    "low": 1
+  },
+  "findings": [
+    {
+      "check": "redundant_attachment",
+      "severity": "low",
+      "message": "SCP DenyRegions [p-e5f6g7h8] is attached directly to Account aws-child1 [339712974046] and also inherited from OU Finance [ou-cww9-x2atbcle].",
+      "rationale": "This SCP contains only Deny statements and is already inherited from an ancestor, so the direct attachment adds no restriction while consuming one of the target's limited attachment slots. Detaching only one copy does not remove the control.",
+      "target": {
+        "type": "account",
+        "id": "339712974046",
+        "name": "aws-child1"
+      },
+      "policy": {
+        "id": "p-e5f6g7h8",
+        "name": "DenyRegions",
+        "aws_managed": false
+      },
+      "evidence": {
+        "inherited_from": [
+          {
+            "type": "organizational_unit",
+            "id": "ou-cww9-x2atbcle",
+            "name": "Finance"
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Each finding states what was found (`message`), where (`target` for a root, OU,
+or account and `policy` for an SCP), and why it matters (`rationale`).
+`evidence` is always an object. Its fields depend on the check:
+
+- `attachment_limit`: `attached_policy_count`, `attached_policies`, and `limit`.
+- `policy_size_limit`: `document_characters` and `limit`.
+- `allow_not_action` and `allow_not_resource`: zero-based `statement_index` and,
+  when the statement has one, `statement_sid`.
+- `redundant_attachment`: `inherited_from`, the ancestors where the same SCP is
+  attached.
+- `duplicate_policy_document`: `policy` is the lowest policy ID and
+  `duplicate_policies` lists the others.
+
+`findings` is `[]` when nothing is found. Findings are ordered by severity
+(high first), then check name, target (root, OUs, accounts, each by ID), policy
+ID, and statement index. `checks` lists every check that ran, so the absence of
+a finding means the check passed. Messages and rationales are English prose for
+people; match on `check`, `severity`, and the structured fields instead.
+
+The management account is included in attachment counts and the
+`management_account_attachment` check, but never in checks about SCP effects.
+Within schema version 1, consumers must tolerate additive object fields and new
+`check` values may be added only with a new schema version.

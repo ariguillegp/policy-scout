@@ -59,6 +59,7 @@ func TestSchemaHelpAdvertisesPublishedContracts(t *testing.T) {
 		"search",
 		"policies",
 		"attachments",
+		"lint",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("schema help missing %q:\n%s", expected, output)
@@ -128,6 +129,28 @@ func TestAWSQueryHelpDocumentsVersionedFocusedContracts(t *testing.T) {
 	} {
 		if !strings.Contains(attachmentsHelp, expected) {
 			t.Errorf("attachments help missing %q:\n%s", expected, attachmentsHelp)
+		}
+	}
+}
+
+func TestAWSLintHelpDocumentsChecksAndExitPolicy(t *testing.T) {
+	output := renderHelp(t, awsLintCmd)
+	for _, expected := range []string{
+		"report mechanical SCP configuration findings",
+		"does not evaluate effective permissions",
+		"exit with status 6",
+		"--fail-on none|low|medium|high",
+		"(default none)",
+		"--policies-per-target-limit int",
+		"(default 10)",
+		"--policy-size-limit int",
+		"(default 10240)",
+		"--output-format text|json",
+		"--timeout",
+		"--max-retries",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("lint help missing %q:\n%s", expected, output)
 		}
 	}
 }

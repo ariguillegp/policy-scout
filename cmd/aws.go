@@ -133,6 +133,7 @@ type hierarchyListClient interface {
 type organizationsClient interface {
 	hierarchyListClient
 	organizations.ListParentsAPIClient
+	organizations.ListPoliciesAPIClient
 	organizations.ListPoliciesForTargetAPIClient
 	organizations.ListRootsAPIClient
 	organizations.ListTargetsForPolicyAPIClient
@@ -231,6 +232,7 @@ func init() {
 	awsCmd.AddCommand(awsSearchCmd)
 	awsCmd.AddCommand(awsPoliciesCmd)
 	awsCmd.AddCommand(awsAttachmentsCmd)
+	awsCmd.AddCommand(awsLintCmd)
 	authCmd.AddCommand(authStatusCmd)
 
 	awsCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS shared-config profile to use (overrides AWS_PROFILE)")

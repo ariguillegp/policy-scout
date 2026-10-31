@@ -91,9 +91,9 @@ all required AWS calls and rendering succeed. A nonzero exit status therefore
 leaves stdout empty rather than containing a partial JSON document.
 
 Every current JSON result and diagnostic has an embedded, credential-free
-Draft 2020-12 schema. Run `policy-scout schema --help` to discover the seven
-published contracts, including separate organization v1/v2 and focused-query
-schemas. Validate each document with the schema emitted by the same binary.
+Draft 2020-12 schema. Run `policy-scout schema --help` to discover the eight
+published contracts, including separate organization v1/v2, focused-query, and
+SCP lint schemas. Validate each document with the schema emitted by the same binary.
 
 `aws policies` makes calls only for one target, its ancestors, and required
 organization metadata. `aws attachments` uses `ListTargetsForPolicy`, then
@@ -102,6 +102,34 @@ reach. A root attachment requires a full descendant traversal; an OU attachment
 requires only that OU's subtree; account-only attachments require no descendant
 traversal. Pagination, duplicate API entries, timeout, and retry behavior are
 the same as for organization traversal.
+
+## SCP lint in CI
+
+`aws lint` reports SCP hygiene findings for the whole organization. By default
+findings do not affect the exit status: `0` means the report on stdout is
+complete, whether or not it contains findings. Add `--fail-on` to gate a
+pipeline on severity:
+
+```bash
+policy-scout --error-format json aws lint --fail-on medium \
+  --output-format json --timeout 2m --max-retries 3 \
+  > scp-lint.json 2> policy-scout-error.json
+status=$?
+if [ "$status" -eq 6 ]; then
+  jq -r '.findings[] | select(.severity != "low") | "\(.severity) \(.check): \(.message)"' scp-lint.json
+fi
+```
+
+With `--fail-on low`, `medium`, or `high`, the command exits `6` when at least
+one finding has that severity or higher. Exit status `6` is not a failure: the
+complete report is on stdout and stderr is empty. Any other nonzero status is
+an ordinary failure with an empty stdout and a diagnostic on stderr.
+
+The lint makes one `ListPoliciesForTarget` request per root, OU, and account,
+one `ListPolicies` traversal, and one `DescribePolicy` request per SCP in the
+organization, so allow a longer `--timeout` than for focused queries in large
+organizations. See the [lint report contract](output.md#scp-lint-report) for
+the checks and their fields.
 
 ## Structured errors
 
@@ -151,6 +179,7 @@ signal and is intentionally absent from the JSON object.
 | `3` | `aws_credentials` | Missing, invalid, or expired credentials. | Refresh or configure credentials. |
 | `4` | `aws_access_denied` | AWS denied the operation. | Grant the required read permissions. |
 | `5` | `aws_transient` | Retryable network, throttling, or AWS service failure. | Retry with backoff. |
+| `6` | — | `aws lint --fail-on` found at least one finding at or above the threshold. Not a failure; stderr is empty. | Parse stdout and fix or accept the findings. |
 
 Human-readable stderr remains the default. Retry only transient failures without
 first changing the invocation, credentials, or permissions.

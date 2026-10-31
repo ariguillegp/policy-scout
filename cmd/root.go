@@ -19,6 +19,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/signal"
@@ -69,6 +70,10 @@ func executeCommandContext(
 	err := command.ExecuteContext(ctx)
 	if err == nil {
 		return exitSuccess
+	}
+	var findingsErr *lintFindingsError
+	if errors.As(err, &findingsErr) {
+		return exitFindings
 	}
 
 	diagnostic := classifyError(err)

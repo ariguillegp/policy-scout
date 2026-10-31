@@ -23,6 +23,7 @@ type versionInfo struct {
 	SearchSchemaVersion        string   `json:"search_schema_version"`
 	PoliciesSchemaVersion      string   `json:"policies_schema_version"`
 	AttachmentsSchemaVersion   string   `json:"attachments_schema_version"`
+	LintSchemaVersion          string   `json:"lint_schema_version"`
 }
 
 var (
@@ -55,6 +56,7 @@ func printVersion(writer io.Writer, output outputFormat) error {
 		SearchSchemaVersion:        awsSearchJSONSchemaVersion,
 		PoliciesSchemaVersion:      policiesQuerySchemaVersion,
 		AttachmentsSchemaVersion:   attachmentsQuerySchemaVersion,
+		LintSchemaVersion:          lintSchemaVersion,
 	}
 	if output == json {
 		encoder := encodingjson.NewEncoder(writer)

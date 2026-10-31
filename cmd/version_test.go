@@ -43,10 +43,11 @@ func TestVersionJSON(t *testing.T) {
 	}
 	if result.SearchSchemaVersion != awsSearchJSONSchemaVersion ||
 		result.PoliciesSchemaVersion != policiesQuerySchemaVersion ||
-		result.AttachmentsSchemaVersion != attachmentsQuerySchemaVersion {
-		t.Fatalf("search/policies/attachments schema versions = %q/%q/%q, want %q/%q/%q",
-			result.SearchSchemaVersion, result.PoliciesSchemaVersion, result.AttachmentsSchemaVersion,
-			awsSearchJSONSchemaVersion, policiesQuerySchemaVersion, attachmentsQuerySchemaVersion)
+		result.AttachmentsSchemaVersion != attachmentsQuerySchemaVersion ||
+		result.LintSchemaVersion != lintSchemaVersion {
+		t.Fatalf("search/policies/attachments/lint schema versions = %q/%q/%q/%q, want %q/%q/%q/%q",
+			result.SearchSchemaVersion, result.PoliciesSchemaVersion, result.AttachmentsSchemaVersion, result.LintSchemaVersion,
+			awsSearchJSONSchemaVersion, policiesQuerySchemaVersion, attachmentsQuerySchemaVersion, lintSchemaVersion)
 	}
 }
 
