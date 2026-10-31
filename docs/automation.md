@@ -105,10 +105,24 @@ Its contract is documented in [the output reference](output.md#organization-admi
 It reports configuration only and does not evaluate effective permissions. A
 nonzero exit status leaves stdout empty.
 
+To find which principals, Regions, or other contexts are exempt from SCP deny
+statements, use the [exemptions document](exemptions.md). It is static
+extraction from policy text, not an effective-permissions evaluation. Like the
+focused queries, it writes nothing to stdout on failure. Treat items with
+`"interpretable": false` as needing human review:
+
+```bash
+policy-scout --error-format json aws exemptions \
+  --account-id 339712974046 --output-format json --timeout 30s \
+  > exemptions.json 2> policy-scout-error.json
+jq '.policies[].deny_statements[].exemptions[] | select(.interpretable | not)' exemptions.json
+```
+
 Every current JSON result and diagnostic has an embedded, credential-free
-Draft 2020-12 schema. Run `policy-scout schema --help` to discover the nine
-published contracts, including separate organization v1/v2, focused-query, SCP lint,
-and administrators schemas. Validate each document with the schema emitted by the same binary.
+Draft 2020-12 schema. Run `policy-scout schema --help` to discover the ten
+published contracts, including separate organization v1/v2, focused-query, SCP
+lint, administrators, and deny-exemptions schemas. Validate each document with
+the schema emitted by the same binary.
 
 `aws policies` makes calls only for one target, its ancestors, and required
 organization metadata. `aws attachments` uses `ListTargetsForPolicy`, then

@@ -41,6 +41,8 @@ Root [r-cww9]
 - Answer "who can change these controls?": the management account, the
   Organizations resource-based delegation policy, delegated administrators and
   their services, and services with trusted access enabled.
+- List the principals, Regions, tags, actions, and other contexts exempted from
+  SCP deny statements, for one SCP or for every SCP applying to an account or OU.
 - Print version-matched JSON Schemas locally without AWS credentials or network access.
 
 ## Installation
@@ -180,6 +182,10 @@ policy-scout aws lint --fail-on medium
 policy-scout aws administrators
 policy-scout aws administrators --output-format text
 
+# List carve-outs (break-glass roles, allowed Regions, NotAction, ...) in SCP denies
+policy-scout aws exemptions --policy-id p-e5f6g7h8
+policy-scout aws exemptions --account-id 339712974046 --output-format text
+
 # Bound AWS work in CI or another automated environment
 policy-scout aws --account-id all --timeout 30s --max-retries 3
 
@@ -196,6 +202,7 @@ policy-scout schema policies
 policy-scout schema attachments
 policy-scout schema lint
 policy-scout schema administrators
+policy-scout schema exemptions
 
 # Discover the binary and published JSON Schema versions
 policy-scout version
@@ -215,9 +222,9 @@ Published schemas use JSON Schema Draft 2020-12 and are embedded in release
 binaries, so schema discovery performs no network access. Validate output with
 the schema emitted by the same binary version. Formal schemas cover both
 organization versions, auth-status, structured errors, entity search, both
-focused queries, the SCP lint report, and the administrators report. Each
-document carries its own `schema_version`; consumers must tolerate additive
-object fields within a schema version.
+focused queries, the SCP lint report, the administrators report, and deny
+exemptions. Each document carries its own `schema_version`; consumers must
+tolerate additive object fields within a schema version.
 
 ## Required AWS permissions
 
@@ -240,7 +247,7 @@ requested:
 - `organizations:ListParents`
 - `organizations:ListPoliciesForTarget`
 - `organizations:DescribePolicy` with `--include-policy-documents` or for `aws
-  lint`
+  lint` and `aws exemptions`
 - `organizations:ListTargetsForPolicy` for `aws attachments`
 - `organizations:ListPolicies` for `aws lint`
 - `organizations:DescribeOrganization`, `organizations:DescribeResourcePolicy`,
@@ -276,10 +283,15 @@ configuration; it does not evaluate IAM policies, interpret the delegation
 policy's statements, or determine which identities inside an account hold the
 corresponding permissions.
 
+`aws exemptions --policy-id` needs only `ListRoots` and `DescribePolicy`. With
+`--account-id` or `--ou-id`, it needs the `aws policies` permissions plus one
+`DescribePolicy` request per unique applicable SCP.
+
 ## Documentation
 
 - [Output formats and organization JSON contract](docs/output.md)
 - [AWS authentication status contract](docs/auth-status.md)
+- [SCP deny exemptions](docs/exemptions.md)
 - [Automation, errors, and exit statuses](docs/automation.md)
 - [Releases and changes](https://github.com/ariguillegp/policy-scout/releases)
 

@@ -5,8 +5,12 @@ import (
 	"context"
 	encodingjson "encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/organizations"
+	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
 	"github.com/aws/smithy-go"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -101,6 +105,7 @@ func TestPublishedSchemasUseDraft202012AndStableIdentity(t *testing.T) {
 		"schemas/attachments-v1.json":    "https://policy-scout.dev/schemas/attachments/v1",
 		"schemas/lint-v1.json":           "https://policy-scout.dev/schemas/lint/v1",
 		"schemas/administrators-v1.json": "https://policy-scout.dev/schemas/administrators/v1",
+		"schemas/exemptions-v1.json":     "https://policy-scout.dev/schemas/exemptions/v1",
 	}
 	for path, wantID := range wantIDs {
 		document, err := schemaFiles.ReadFile(path)
@@ -344,6 +349,79 @@ func TestAdministratorsSchemaValidatesProducerVariants(t *testing.T) {
 		`{"schema_version":"1","organization":{"id":"o-example"},"management_account":{"id":"111111111111"},"resource_policy":{"id":"rp-1","content":"{}"},"delegated_administrators":[],"trusted_services":[]}`,
 		`{"schema_version":"1","organization":{"id":"o-example"},"management_account":{"id":"111111111111"},"resource_policy":null,"delegated_administrators":[{"id":"222222222222"}],"trusted_services":[]}`,
 		`{"schema_version":"1","organization":{"id":"o-example"},"management_account":{"id":"111111111111"},"resource_policy":null,"delegated_administrators":[],"trusted_services":[{"service_principal":"sso.amazonaws.com","date_enabled":"yesterday"}]}`,
+	} {
+		assertInvalidDocument(t, schema, invalid)
+	}
+}
+
+func TestExemptionsSchemaValidatesProducerVariantsAndRejectsDrift(t *testing.T) {
+	t.Parallel()
+	schema := compilePublishedSchema(t, "schemas/exemptions-v1.json")
+	var describeCalls atomic.Int32
+	client := exemptionsFixtureClient(&describeCalls)
+	client.describePolicyFn = func(context.Context, *organizations.DescribePolicyInput) (*organizations.DescribePolicyOutput, error) {
+		return &organizations.DescribePolicyOutput{Policy: &types.Policy{
+			PolicySummary: &types.PolicySummary{
+				Id: aws.String(queryPolicyID), Name: aws.String("Guardrail"), Type: types.PolicyTypeServiceControlPolicy,
+			},
+			Content: aws.String(securityBaselineSCP),
+		}}, nil
+	}
+	target, err := buildTargetExemptionsQuery(context.Background(), client, queryInheritedAccount, queryRootID, "Root", queryManagementAccount)
+	if err != nil {
+		t.Fatalf("build target exemptions: %v", err)
+	}
+	management, err := buildTargetExemptionsQuery(context.Background(), client, queryManagementAccount, queryRootID, "Root", queryManagementAccount)
+	if err != nil {
+		t.Fatalf("build management exemptions: %v", err)
+	}
+	policy, err := buildPolicyExemptionsQuery(context.Background(), client, queryPolicyID)
+	if err != nil {
+		t.Fatalf("build policy exemptions: %v", err)
+	}
+	for _, result := range []exemptionsQueryResult{target, management, policy} {
+		var output bytes.Buffer
+		if err := writeExemptionsQuery(&output, result, json); err != nil {
+			t.Fatalf("write exemptions: %v", err)
+		}
+		if err := validateJSONDocument(t, schema, output.Bytes()); err != nil {
+			t.Fatalf("producer output does not satisfy exemptions schema: %v\n%s", err, output.String())
+		}
+		assertFieldsDeclared(t, "schemas/exemptions-v1.json", "", output.Bytes())
+	}
+	var policyOutput bytes.Buffer
+	if err := writeExemptionsQuery(&policyOutput, target, json); err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Policies []struct {
+			DenyStatements []struct {
+				Exemptions []encodingjson.RawMessage `json:"exemptions"`
+			} `json:"deny_statements"`
+		} `json:"policies"`
+	}
+	if err := encodingjson.Unmarshal(policyOutput.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range decoded.Policies[0].DenyStatements {
+		for _, item := range statement.Exemptions {
+			assertFieldsDeclared(t, "schemas/exemptions-v1.json", "exemption", item)
+		}
+	}
+
+	const policySelection = `"selection":{"type":"policy","policy_id":"p-policy1"}`
+	const statementPrefix = `"policies":[{"policy_id":"p-policy1","policy_name":"Guardrail","deny_statements":[{"index":0,"exemptions":[`
+	assertValidDocument(t, schema, `{"schema_version":"1",`+policySelection+`,`+statementPrefix+`]}]}]}`)
+	for _, invalid := range []string{
+		// Policy selections carry no target, path, or provenance.
+		`{"schema_version":"1",` + policySelection + `,"target":{"type":"organizational_unit","id":"ou-root-12345678","name":"Production","scp_applicable":true},"policies":[]}`,
+		`{"schema_version":"1",` + policySelection + `,"policies":[{"policy_id":"p-policy1","policy_name":"Guardrail","provenance":[{"attached_to":{"type":"root","id":"r-root"},"inherited":true}],"deny_statements":[]}]}`,
+		// Target selections require a target and path.
+		`{"schema_version":"1","selection":{"type":"account","target_id":"222222222222"},"policies":[]}`,
+		// Interpreted conditions state when they exempt; uninterpretable ones never do.
+		`{"schema_version":"1",` + policySelection + `,` + statementPrefix + `{"source":"condition","category":"region","operator":"StringNotEquals","key":"aws:RequestedRegion","values":["us-east-1"],"interpretable":true}]}]}]}`,
+		`{"schema_version":"1",` + policySelection + `,` + statementPrefix + `{"source":"condition","operator":"NumericLessThan","key":"aws:MultiFactorAuthAge","values":["1"],"exempt_when":"matches_values","interpretable":false,"reason":"not interpreted"}]}]}]}`,
+		`{"schema_version":"1",` + policySelection + `,` + statementPrefix + `{"source":"not_action","values":["iam:*"],"exempt_when":"does_not_match_values","interpretable":true}]}]}]}`,
 	} {
 		assertInvalidDocument(t, schema, invalid)
 	}

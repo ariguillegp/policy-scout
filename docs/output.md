@@ -254,7 +254,8 @@ policy-scout version --output-format json
   "search_schema_version": "1",
   "policies_schema_version": "1",
   "attachments_schema_version": "1",
-  "administrators_schema_version": "1"
+  "administrators_schema_version": "1",
+  "exemptions_schema_version": "1"
 }
 ```
 
@@ -758,3 +759,11 @@ reported as `administrators_schema_version` by
 `--output-format text` prints the same information, including the indented
 delegation policy document, for people. Like other text output, it is not a
 stable automation interface.
+
+## SCP deny exemptions document
+
+`policy-scout aws exemptions` emits its own versioned document listing the
+carve-outs in SCP `Deny` statements, for one SCP or for every SCP applying to an
+account or OU. Its contract, interpretation rules, and examples are documented
+in [SCP deny exemptions](exemptions.md). Print its schema with
+`policy-scout schema exemptions`.

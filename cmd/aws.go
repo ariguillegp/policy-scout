@@ -234,6 +234,7 @@ func init() {
 	awsCmd.AddCommand(awsAttachmentsCmd)
 	awsCmd.AddCommand(awsLintCmd)
 	awsCmd.AddCommand(awsAdministratorsCmd)
+	awsCmd.AddCommand(awsExemptionsCmd)
 	authCmd.AddCommand(authStatusCmd)
 
 	awsCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS shared-config profile to use (overrides AWS_PROFILE)")

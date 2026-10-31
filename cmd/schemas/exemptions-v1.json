@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://policy-scout.dev/schemas/exemptions/v1",
+  "title": "Policy Scout SCP deny-exemptions result schema v1",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "selection": { "$ref": "#/$defs/selection" },
+    "target": { "$ref": "#/$defs/selectedTarget" },
+    "path": {
+      "type": "array",
+      "minItems": 2,
+      "prefixItems": [{ "$ref": "#/$defs/rootPathEntity" }],
+      "items": { "$ref": "#/$defs/targetPathEntity" }
+    },
+    "policies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/policy" }
+    }
+  },
+  "required": ["schema_version", "selection", "policies"],
+  "oneOf": [
+    {
+      "properties": {
+        "selection": { "properties": { "type": { "const": "policy" } } },
+        "policies": {
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "not": { "required": ["provenance"] } }
+        }
+      },
+      "not": {
+        "anyOf": [{ "required": ["target"] }, { "required": ["path"] }]
+      }
+    },
+    {
+      "properties": {
+        "selection": { "properties": { "type": { "enum": ["account", "organizational_unit"] } } },
+        "policies": { "items": { "required": ["provenance"] } }
+      },
+      "required": ["target", "path"]
+    }
+  ],
+  "$defs": {
+    "selection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "policy" },
+            "policy_id": { "type": "string", "minLength": 1 }
+          },
+          "required": ["type", "policy_id"],
+          "not": { "required": ["target_id"] }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "enum": ["account", "organizational_unit"] },
+            "target_id": { "type": "string", "minLength": 1 }
+          },
+          "required": ["type", "target_id"],
+          "not": { "required": ["policy_id"] }
+        }
+      ]
+    },
+    "rootPathEntity": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "root" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" }
+      },
+      "required": ["type", "id"]
+    },
+    "targetPathEntity": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["organizational_unit", "account"] },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 }
+      },
+      "required": ["type", "id", "name"]
+    },
+    "entity": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["root", "organizational_unit", "account"] },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" }
+      },
+      "required": ["type", "id"]
+    },
+    "organizationalUnitTarget": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "organizational_unit" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "scp_applicable": { "const": true }
+      },
+      "required": ["type", "id", "name", "scp_applicable"],
+      "not": { "required": ["management_account"] }
+    },
+    "memberAccountTarget": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "account" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "management_account": { "const": false },
+        "scp_applicable": { "const": true }
+      },
+      "required": ["type", "id", "name", "management_account", "scp_applicable"]
+    },
+    "managementAccountTarget": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "account" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "management_account": { "const": true },
+        "scp_applicable": { "const": false }
+      },
+      "required": ["type", "id", "name", "management_account", "scp_applicable"]
+    },
+    "selectedTarget": {
+      "oneOf": [
+        { "$ref": "#/$defs/organizationalUnitTarget" },
+        { "$ref": "#/$defs/memberAccountTarget" },
+        { "$ref": "#/$defs/managementAccountTarget" }
+      ]
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "attached_to": { "$ref": "#/$defs/entity" },
+        "inherited": { "type": "boolean" }
+      },
+      "required": ["attached_to", "inherited"]
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "policy_id": { "type": "string", "minLength": 1 },
+        "policy_name": { "type": "string", "minLength": 1 },
+        "provenance": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/provenance" }
+        },
+        "deny_statements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/denyStatement" }
+        }
+      },
+      "required": ["policy_id", "policy_name", "deny_statements"]
+    },
+    "denyStatement": {
+      "type": "object",
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "sid": { "type": "string", "minLength": 1 },
+        "exemptions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/exemption" }
+        }
+      },
+      "required": ["index", "exemptions"]
+    },
+    "values": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "category": {
+      "enum": [
+        "principal",
+        "principal_account",
+        "principal_organization",
+        "principal_tag",
+        "region",
+        "resource_owner",
+        "resource_tag",
+        "request_tag",
+        "network",
+        "service_call",
+        "other"
+      ]
+    },
+    "exemption": {
+      "type": "object",
+      "properties": {
+        "source": { "enum": ["condition", "not_action", "not_resource", "statement"] },
+        "category": { "$ref": "#/$defs/category" },
+        "operator": { "type": "string", "minLength": 1 },
+        "key": { "type": "string", "minLength": 1 },
+        "values": { "$ref": "#/$defs/values" },
+        "exempt_when": { "enum": ["matches_values", "does_not_match_values", "key_present", "key_absent"] },
+        "exempt_if_key_absent": { "type": "boolean" },
+        "interpretable": { "type": "boolean" },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "required": ["source", "interpretable"],
+      "oneOf": [
+        {
+          "properties": {
+            "source": { "const": "condition" },
+            "interpretable": { "const": true }
+          },
+          "required": ["category", "operator", "key", "values", "exempt_when", "exempt_if_key_absent"],
+          "not": { "required": ["reason"] }
+        },
+        {
+          "properties": {
+            "source": { "enum": ["not_action", "not_resource"] },
+            "interpretable": { "const": true },
+            "exempt_when": { "const": "matches_values" }
+          },
+          "required": ["values", "exempt_when"],
+          "not": {
+            "anyOf": [
+              { "required": ["category"] },
+              { "required": ["operator"] },
+              { "required": ["key"] },
+              { "required": ["exempt_if_key_absent"] },
+              { "required": ["reason"] }
+            ]
+          }
+        },
+        {
+          "properties": { "interpretable": { "const": false } },
+          "required": ["reason"],
+          "not": {
+            "anyOf": [{ "required": ["exempt_when"] }, { "required": ["exempt_if_key_absent"] }]
+          }
+        }
+      ]
+    }
+  }
+}

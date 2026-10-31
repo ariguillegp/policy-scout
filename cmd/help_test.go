@@ -61,6 +61,7 @@ func TestSchemaHelpAdvertisesPublishedContracts(t *testing.T) {
 		"attachments",
 		"lint",
 		"administrators",
+		"exemptions",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("schema help missing %q:\n%s", expected, output)
@@ -171,6 +172,25 @@ func TestAWSAdministratorsHelpDocumentsScopeAndControls(t *testing.T) {
 	} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("administrators help missing %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestAWSExemptionsHelpDocumentsStaticExtractionContract(t *testing.T) {
+	output := renderHelp(t, awsExemptionsCmd)
+	for _, expected := range []string{
+		"one compact, versioned result",
+		"--policy-id",
+		"--account-id",
+		"--ou-id",
+		"static extraction from policy text",
+		`"interpretable": false`,
+		"--output-format text|json",
+		"--timeout",
+		"--max-retries",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("exemptions help missing %q:\n%s", expected, output)
 		}
 	}
 }
