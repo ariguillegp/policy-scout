@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://policy-scout.dev/schemas/coverage/v1",
+  "title": "Policy Scout SCP coverage-report schema v1",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "query": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "policy" },
+            "policy_id": { "type": "string", "minLength": 1 },
+            "policy_name": { "type": "string", "minLength": 1 }
+          },
+          "required": ["type", "policy_id", "policy_name"],
+          "not": { "required": ["action"] }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "action" },
+            "action": { "type": "string", "minLength": 1 }
+          },
+          "required": ["type", "action"],
+          "not": { "anyOf": [{ "required": ["policy_id"] }, { "required": ["policy_name"] }] }
+        }
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "accounts": { "type": "integer", "minimum": 0 },
+        "covered": { "type": "integer", "minimum": 0 },
+        "conditionally_covered": { "type": "integer", "minimum": 0 },
+        "uncovered": { "type": "integer", "minimum": 0 },
+        "excluded": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["accounts", "covered", "conditionally_covered", "uncovered", "excluded"]
+    },
+    "uncovered_accounts": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          { "$ref": "#/$defs/accountResult" },
+          { "properties": { "evidence": { "maxItems": 0 } } }
+        ]
+      }
+    },
+    "conditionally_covered_accounts": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          { "$ref": "#/$defs/accountResult" },
+          {
+            "properties": {
+              "evidence": { "minItems": 1, "items": { "required": ["statement"] } }
+            }
+          }
+        ]
+      }
+    },
+    "covered_accounts": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          { "$ref": "#/$defs/accountResult" },
+          { "properties": { "evidence": { "minItems": 1 } } }
+        ]
+      }
+    },
+    "excluded_accounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "account": { "$ref": "#/$defs/account" },
+          "path": { "$ref": "#/$defs/path" },
+          "reason": { "enum": ["management_account", "inactive_account"] }
+        },
+        "required": ["account", "path", "reason"]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "query",
+    "summary",
+    "uncovered_accounts",
+    "conditionally_covered_accounts",
+    "covered_accounts",
+    "excluded_accounts"
+  ],
+  "if": { "properties": { "query": { "properties": { "type": { "const": "policy" } } } } },
+  "then": {
+    "properties": {
+      "conditionally_covered_accounts": { "maxItems": 0 },
+      "covered_accounts": {
+        "items": {
+          "properties": { "evidence": { "items": { "not": { "required": ["statement"] } } } }
+        }
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "covered_accounts": {
+        "items": {
+          "properties": {
+            "evidence": {
+              "items": {
+                "required": ["statement"],
+                "properties": {
+                  "statement": {
+                    "allOf": [
+                      { "not": { "required": ["condition"] } },
+                      { "not": { "required": ["resource"] } },
+                      { "not": { "required": ["not_resource"] } }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "entity": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["root", "organizational_unit", "account"] },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" }
+      },
+      "required": ["type", "id"]
+    },
+    "path": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/entity" },
+      "prefixItems": [{ "properties": { "type": { "const": "root" } } }]
+    },
+    "account": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[0-9]{12}$" },
+        "name": { "type": "string", "minLength": 1 },
+        "state": { "type": "string", "minLength": 1 }
+      },
+      "required": ["id", "name"]
+    },
+    "statement": {
+      "type": "object",
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "sid": { "type": "string", "minLength": 1 },
+        "matched_by": { "enum": ["action", "not_action"] },
+        "condition": { "type": "object", "minProperties": 1 },
+        "resource": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "not_resource": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+      },
+      "required": ["index", "matched_by"]
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "policy_id": { "type": "string", "minLength": 1 },
+        "policy_name": { "type": "string", "minLength": 1 },
+        "attached_to": { "$ref": "#/$defs/entity" },
+        "inherited": { "type": "boolean" },
+        "statement": { "$ref": "#/$defs/statement" }
+      },
+      "required": ["policy_id", "policy_name", "attached_to", "inherited"]
+    },
+    "accountResult": {
+      "type": "object",
+      "properties": {
+        "account": { "$ref": "#/$defs/account" },
+        "path": { "$ref": "#/$defs/path" },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } }
+      },
+      "required": ["account", "path", "evidence"]
+    }
+  }
+}

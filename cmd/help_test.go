@@ -62,6 +62,7 @@ func TestSchemaHelpAdvertisesPublishedContracts(t *testing.T) {
 		"lint",
 		"administrators",
 		"exemptions",
+		"coverage",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("schema help missing %q:\n%s", expected, output)
@@ -153,6 +154,26 @@ func TestAWSLintHelpDocumentsChecksAndExitPolicy(t *testing.T) {
 	} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("lint help missing %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestAWSCoverageHelpDocumentsModesExclusionsAndGapStatus(t *testing.T) {
+	output := renderHelp(t, awsCoverageCmd)
+	for _, expected := range []string{
+		"one compact, versioned coverage report",
+		"--policy-id",
+		"--action",
+		"conditional coverage",
+		"management account",
+		"--fail-on-gaps",
+		"exit 6",
+		"--output-format text|json",
+		"--timeout",
+		"--max-retries",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("coverage help missing %q:\n%s", expected, output)
 		}
 	}
 }

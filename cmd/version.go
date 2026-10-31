@@ -26,6 +26,7 @@ type versionInfo struct {
 	LintSchemaVersion           string   `json:"lint_schema_version"`
 	AdministratorsSchemaVersion string   `json:"administrators_schema_version"`
 	ExemptionsSchemaVersion     string   `json:"exemptions_schema_version"`
+	CoverageSchemaVersion       string   `json:"coverage_schema_version"`
 }
 
 var (
@@ -61,6 +62,7 @@ func printVersion(writer io.Writer, output outputFormat) error {
 		LintSchemaVersion:           lintSchemaVersion,
 		AdministratorsSchemaVersion: administratorsSchemaVersion,
 		ExemptionsSchemaVersion:     exemptionsQuerySchemaVersion,
+		CoverageSchemaVersion:       coverageSchemaVersion,
 	}
 	if output == json {
 		encoder := encodingjson.NewEncoder(writer)

@@ -255,7 +255,8 @@ policy-scout version --output-format json
   "policies_schema_version": "1",
   "attachments_schema_version": "1",
   "administrators_schema_version": "1",
-  "exemptions_schema_version": "1"
+  "exemptions_schema_version": "1",
+  "coverage_schema_version": "1"
 }
 ```
 
@@ -767,3 +768,147 @@ carve-outs in SCP `Deny` statements, for one SCP or for every SCP applying to an
 account or OU. Its contract, interpretation rules, and examples are documented
 in [SCP deny exemptions](exemptions.md). Print its schema with
 `policy-scout schema exemptions`.
+
+## Coverage report document
+
+`policy-scout aws coverage` answers coverage-gap questions for every account
+in the organization. It emits one two-space-indented, newline-terminated
+document with its own `"schema_version": "1"`. Print its Draft 2020-12 schema
+locally; its canonical identifier is `https://policy-scout.dev/schemas/coverage/v1`,
+and `coverage_schema_version` is available from
+`policy-scout version --output-format json`:
+
+```bash
+policy-scout schema coverage
+```
+
+Use exactly one selector:
+
+```bash
+# Which accounts are missing guardrail p-e5f6g7h8?
+policy-scout aws coverage --policy-id p-e5f6g7h8
+
+# Which accounts have no SCP that denies cloudtrail:StopLogging?
+policy-scout aws coverage --action cloudtrail:StopLogging
+```
+
+With `--policy-id`, an account is covered when that SCP is attached directly to
+the account or to one of its root/OU ancestors. Policy Scout calls
+`DescribePolicy` once to confirm the ID names an SCP, so a mistyped ID fails
+rather than reporting every account as uncovered.
+
+With `--action`, Policy Scout retrieves every applicable SCP document and
+inspects its Deny statements. The action must be one exact IAM action such as
+`cloudtrail:StopLogging`; wildcards are rejected in the query. Policy patterns
+are matched as IAM does, case-insensitively, with `*` matching any run of
+characters and `?` one character, so `cloudtrail:*`, `cloudtrail:Stop*`, and
+`*` all match. A Deny with `NotAction` matches when the action is *not* listed.
+A matching Deny is:
+
+- **coverage** when it has no `Condition` (or an empty one) and applies to all
+  resources: no `Resource` element, or a `Resource` that includes `"*"`, and no
+  `NotResource`;
+- **conditional coverage** otherwise. The statement's `condition`, `resource`,
+  or `not_resource` is reported verbatim. Policy Scout does not evaluate
+  condition keys, so it neither counts these accounts as covered nor as gaps.
+
+An account with at least one coverage match is in `covered_accounts`. An
+account with only conditional matches is in `conditionally_covered_accounts`.
+Every other applicable account is in `uncovered_accounts`. Only Deny statements
+are considered: an account that cannot use an action because an allow-list SCP
+omits it is still reported as uncovered. Policy Scout does not evaluate IAM,
+resource, or session policies, or effective permissions.
+
+`excluded_accounts` lists accounts that are not counted as covered or uncovered:
+
+| `reason` | Meaning |
+| --- | --- |
+| `management_account` | SCPs never restrict the management account, even when attached to it. |
+| `inactive_account` | The account's AWS `state` is not `ACTIVE`, for example `SUSPENDED` or `PENDING_CLOSURE`. |
+
+Abbreviated example:
+
+```json
+{
+  "schema_version": "1",
+  "query": { "type": "action", "action": "cloudtrail:StopLogging" },
+  "summary": { "accounts": 4, "covered": 1, "conditionally_covered": 1, "uncovered": 1, "excluded": 1 },
+  "uncovered_accounts": [
+    {
+      "account": { "id": "666666666666", "name": "sandbox", "state": "ACTIVE" },
+      "path": [
+        { "type": "root", "id": "r-cww9", "name": "Root" },
+        { "type": "account", "id": "666666666666", "name": "sandbox" }
+      ],
+      "evidence": []
+    }
+  ],
+  "conditionally_covered_accounts": [
+    {
+      "account": { "id": "444444444444", "name": "ops", "state": "ACTIVE" },
+      "path": [
+        { "type": "root", "id": "r-cww9", "name": "Root" },
+        { "type": "account", "id": "444444444444", "name": "ops" }
+      ],
+      "evidence": [
+        {
+          "policy_id": "p-cond0001",
+          "policy_name": "DenyStopLoggingExceptBreakGlass",
+          "attached_to": { "type": "account", "id": "444444444444", "name": "ops" },
+          "inherited": false,
+          "statement": {
+            "index": 0,
+            "sid": "BreakGlass",
+            "matched_by": "action",
+            "condition": { "ArnNotLike": { "aws:PrincipalArn": "arn:aws:iam::*:role/BreakGlass" } }
+          }
+        }
+      ]
+    }
+  ],
+  "covered_accounts": [
+    {
+      "account": { "id": "222222222222", "name": "logging", "state": "ACTIVE" },
+      "path": [
+        { "type": "root", "id": "r-cww9", "name": "Root" },
+        { "type": "organizational_unit", "id": "ou-cww9-security", "name": "Security" },
+        { "type": "account", "id": "222222222222", "name": "logging" }
+      ],
+      "evidence": [
+        {
+          "policy_id": "p-guard001",
+          "policy_name": "DenyCloudTrail",
+          "attached_to": { "type": "organizational_unit", "id": "ou-cww9-security", "name": "Security" },
+          "inherited": true,
+          "statement": { "index": 0, "sid": "DenyCloudTrail", "matched_by": "action" }
+        }
+      ]
+    }
+  ],
+  "excluded_accounts": [
+    {
+      "account": { "id": "111111111111", "name": "management", "state": "ACTIVE" },
+      "path": [
+        { "type": "root", "id": "r-cww9", "name": "Root" },
+        { "type": "account", "id": "111111111111", "name": "management" }
+      ],
+      "reason": "management_account"
+    }
+  ]
+}
+```
+
+All four account arrays are always present and are ordered by account ID.
+`path` is root-to-account. `evidence` is `[]` for uncovered accounts and lists
+every matching attachment, root-to-account, for other accounts; one SCP can
+contribute several statements. In policy mode, evidence has no `statement`
+and `conditionally_covered_accounts` is always `[]`. `statement.index` is the
+zero-based position in the policy's `Statement` array (`0` when `Statement` is
+a single object). `account.state` is omitted only if AWS returns no state.
+
+`--output-format text` prints the same buckets for interactive use. The command
+exits `0` whenever the report is complete, including when gaps are found. With
+`--fail-on-gaps`, it still writes the complete report to stdout and then exits
+`6` when `summary.uncovered` is greater than zero. As with `aws lint --fail-on`,
+exit status `6` is not a failure and stderr is empty. Conditional coverage alone does not fail the command; see
+[automation](automation.md#coverage-gates-in-ci).

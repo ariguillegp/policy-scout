@@ -21,10 +21,11 @@ Root [r-cww9]
 
 > [!IMPORTANT]
 > Policy Scout lists names from SCP summaries and can optionally retrieve SCP
-> documents. It does not evaluate SCP Allow/Deny semantics, IAM policies, resource
-> policies, permission boundaries, session policies, or effective permissions.
-> `aws lint` inspects SCP statements only for specific elements, such as an
-> `Allow` statement that uses `NotAction`.
+> documents. Apart from `aws coverage`, which matches SCP Deny statements against
+> one IAM action, it does not evaluate SCP Allow/Deny semantics. It never
+> evaluates IAM policies, resource policies, permission boundaries, session
+> policies, or effective permissions. `aws lint` inspects SCP statements only
+> for specific elements, such as an `Allow` statement that uses `NotAction`.
 
 ## Features
 
@@ -32,6 +33,8 @@ Root [r-cww9]
 - See each target's path from the organization root.
 - Distinguish direct SCP attachments from attachments inherited through ancestors.
 - Identify the management account, whose users and roles are not affected by SCPs.
+- Find coverage gaps: accounts that do not receive a given SCP, or that no SCP
+  Deny covers for a given IAM action, with conditional Denies reported separately.
 - Produce a terminal-friendly tree, stable JSON for automation, or a standalone
   HTML report with collapsible accounts, OUs, and SCPs.
 - Optionally include each unique applicable SCP document in JSON or HTML.
@@ -186,6 +189,13 @@ policy-scout aws administrators --output-format text
 policy-scout aws exemptions --policy-id p-e5f6g7h8
 policy-scout aws exemptions --account-id 339712974046 --output-format text
 
+# Find accounts that are missing a guardrail SCP, directly or through inheritance
+policy-scout aws coverage --policy-id p-a1b2c3d4
+
+# Find accounts where no SCP Deny covers an action; fail CI (exit 6) on gaps
+policy-scout aws coverage --action cloudtrail:StopLogging
+policy-scout aws coverage --action cloudtrail:StopLogging --fail-on-gaps --output-format text
+
 # Bound AWS work in CI or another automated environment
 policy-scout aws --account-id all --timeout 30s --max-retries 3
 
@@ -203,6 +213,7 @@ policy-scout schema attachments
 policy-scout schema lint
 policy-scout schema administrators
 policy-scout schema exemptions
+policy-scout schema coverage
 
 # Discover the binary and published JSON Schema versions
 policy-scout version
@@ -222,9 +233,10 @@ Published schemas use JSON Schema Draft 2020-12 and are embedded in release
 binaries, so schema discovery performs no network access. Validate output with
 the schema emitted by the same binary version. Formal schemas cover both
 organization versions, auth-status, structured errors, entity search, both
-focused queries, the SCP lint report, the administrators report, and deny
-exemptions. Each document carries its own `schema_version`; consumers must
-tolerate additive object fields within a schema version.
+focused queries, the SCP lint report, the administrators report, deny
+exemptions, and coverage reports. Each document carries its own
+`schema_version`; consumers must tolerate additive object fields within a
+schema version.
 
 ## Required AWS permissions
 
@@ -234,8 +246,8 @@ requested:
 - `organizations:ListRoots`
 - `organizations:ListAccountsForParent` and
   `organizations:ListOrganizationalUnitsForParent` for the fastest name search,
-  entire-organization inspection, and attached root/OU scopes queried by `aws
-  attachments`
+  entire-organization inspection, `aws coverage`, and attached root/OU scopes
+  queried by `aws attachments`
 - Existing policies can instead grant `organizations:ListChildren`,
   `organizations:DescribeAccount`, and
   `organizations:DescribeOrganizationalUnit`; Policy Scout automatically falls
@@ -243,11 +255,11 @@ requested:
 - `organizations:DescribeAccount` for focused account inspection
 - `organizations:DescribeOrganizationalUnit` for focused account/OU paths
 - `organizations:DescribeOrganization` for an account, the entire organization,
-  or `aws attachments`
+  `aws attachments`, or `aws coverage`
 - `organizations:ListParents`
 - `organizations:ListPoliciesForTarget`
 - `organizations:DescribePolicy` with `--include-policy-documents` or for `aws
-  lint` and `aws exemptions`
+  lint`, `aws exemptions`, and `aws coverage`
 - `organizations:ListTargetsForPolicy` for `aws attachments`
 - `organizations:ListPolicies` for `aws lint`
 - `organizations:DescribeOrganization`, `organizations:DescribeResourcePolicy`,
@@ -287,9 +299,16 @@ corresponding permissions.
 `--account-id` or `--ou-id`, it needs the `aws policies` permissions plus one
 `DescribePolicy` request per unique applicable SCP.
 
+`aws coverage` always traverses the entire organization, so it needs the same
+permissions as `aws --account-id all` plus `DescribePolicy`: once for
+`--policy-id`, or once per unique applicable SCP for `--action`. It does not
+use `ListTargetsForPolicy`. It reports the configured SCP Deny coverage only
+and does not evaluate effective permissions.
+
 ## Documentation
 
 - [Output formats and organization JSON contract](docs/output.md)
+- [Coverage report contract](docs/output.md#coverage-report-document)
 - [AWS authentication status contract](docs/auth-status.md)
 - [SCP deny exemptions](docs/exemptions.md)
 - [Automation, errors, and exit statuses](docs/automation.md)

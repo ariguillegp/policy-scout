@@ -72,7 +72,8 @@ func executeCommandContext(
 		return exitSuccess
 	}
 	var findingsErr *lintFindingsError
-	if errors.As(err, &findingsErr) {
+	var gapErr *coverageGapError
+	if errors.As(err, &findingsErr) || errors.As(err, &gapErr) {
 		return exitFindings
 	}
 

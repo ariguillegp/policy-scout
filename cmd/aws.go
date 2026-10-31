@@ -775,6 +775,7 @@ type organizationNode struct {
 	ID                string                `json:"id"`
 	Name              string                `json:"name,omitempty"`
 	ManagementAccount bool                  `json:"management_account,omitempty"`
+	AccountState      string                `json:"-"`
 	SCPs              []string              `json:"scps,omitempty"`
 	SCPAttachments    []scpAttachment       `json:"scp_attachments,omitempty"`
 	Children          []organizationNode    `json:"children,omitempty"`
@@ -1282,6 +1283,7 @@ func newOrganizationTreeJob(
 				if err != nil {
 					return nil, err
 				}
+				built.AccountState = node.AccountState
 				*node = built
 				return nil, nil
 			}
@@ -1309,6 +1311,7 @@ func newOrganizationTreeJob(
 				accountID := aws.ToString(account.Id)
 				node.Children[index] = organizationNode{
 					Type: accountEntityType, ID: accountID, Name: aws.ToString(account.Name),
+					AccountState: string(account.State),
 				}
 				children = append(children, newOrganizationTreeJob(
 					client, &node.Children[index], managementAccountID, appendPath(ancestors, accountID), cache,

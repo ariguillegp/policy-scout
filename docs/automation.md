@@ -119,10 +119,10 @@ jq '.policies[].deny_statements[].exemptions[] | select(.interpretable | not)' e
 ```
 
 Every current JSON result and diagnostic has an embedded, credential-free
-Draft 2020-12 schema. Run `policy-scout schema --help` to discover the ten
+Draft 2020-12 schema. Run `policy-scout schema --help` to discover the eleven
 published contracts, including separate organization v1/v2, focused-query, SCP
-lint, administrators, and deny-exemptions schemas. Validate each document with
-the schema emitted by the same binary.
+lint, administrators, deny-exemptions, and coverage-report schemas. Validate
+each document with the schema emitted by the same binary.
 
 `aws policies` makes calls only for one target, its ancestors, and required
 organization metadata. `aws attachments` uses `ListTargetsForPolicy`, then
@@ -159,6 +159,42 @@ one `ListPolicies` traversal, and one `DescribePolicy` request per SCP in the
 organization, so allow a longer `--timeout` than for focused queries in large
 organizations. See the [lint report contract](output.md#scp-lint-report) for
 the checks and their fields.
+
+## Coverage gates in CI
+
+`aws coverage` reports which accounts an SCP, or a Deny for one IAM action,
+does not reach. By default it exits `0` whenever the report is complete, so a
+report with gaps is data rather than a failure. Add `--fail-on-gaps` to use it
+as a gate:
+
+```bash
+policy-scout --error-format json aws coverage \
+  --action cloudtrail:StopLogging --fail-on-gaps \
+  --output-format json --timeout 2m --max-retries 3 \
+  > coverage.json 2> policy-scout-error.json
+status=$?
+if [ "$status" -eq 6 ]; then
+  jq -r '.uncovered_accounts[].account.id' coverage.json
+fi
+```
+
+Exit status `6` means the report on stdout is complete and
+`summary.uncovered` is greater than zero. As with `aws lint --fail-on`, it is
+not a failure: stderr is empty. Any other nonzero status is an ordinary
+failure with an empty stdout and a diagnostic on stderr.
+
+Accounts that are only conditionally covered, the management account, and
+accounts whose state is not `ACTIVE` never trigger exit `6`. To also gate on
+conditional coverage, test it explicitly:
+
+```bash
+jq -e '.summary.conditionally_covered == 0' coverage.json
+```
+
+`aws coverage` traverses the entire organization and lists the SCPs for every
+OU and account. With `--action` it also calls `DescribePolicy` once per unique
+applicable SCP; with `--policy-id` it calls `DescribePolicy` once for the
+selected policy. Set `--timeout` with large organizations in mind.
 
 ## Structured errors
 
@@ -208,7 +244,7 @@ signal and is intentionally absent from the JSON object.
 | `3` | `aws_credentials` | Missing, invalid, or expired credentials. | Refresh or configure credentials. |
 | `4` | `aws_access_denied` | AWS denied the operation. | Grant the required read permissions. |
 | `5` | `aws_transient` | Retryable network, throttling, or AWS service failure. | Retry with backoff. |
-| `6` | — | `aws lint --fail-on` found at least one finding at or above the threshold. Not a failure; stderr is empty. | Parse stdout and fix or accept the findings. |
+| `6` | — | `aws lint --fail-on` found at least one finding at or above the threshold, or `aws coverage --fail-on-gaps` found uncovered accounts. Not a failure; stderr is empty. | Parse stdout and fix or accept the findings or gaps. |
 
 Human-readable stderr remains the default. Retry only transient failures without
 first changing the invocation, credentials, or permissions.

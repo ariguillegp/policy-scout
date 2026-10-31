@@ -247,6 +247,7 @@ func TestVersionTextAndJSON(t *testing.T) {
 			AttachmentsSchemaVersion    string   `json:"attachments_schema_version"`
 			LintSchemaVersion           string   `json:"lint_schema_version"`
 			AdministratorsSchemaVersion string   `json:"administrators_schema_version"`
+			CoverageSchemaVersion       string   `json:"coverage_schema_version"`
 		}
 		if err := json.Unmarshal([]byte(result.stdout), &info); err != nil {
 			t.Fatalf("stdout is not version JSON: %q: %v", result.stdout, err)
@@ -256,7 +257,7 @@ func TestVersionTextAndJSON(t *testing.T) {
 			info.AuthStatusSchemaVersion != "1" || info.ErrorSchemaVersion != "1" ||
 			info.SearchSchemaVersion != "1" || info.PoliciesSchemaVersion != "1" ||
 			info.AttachmentsSchemaVersion != "1" || info.LintSchemaVersion != "1" ||
-			info.AdministratorsSchemaVersion != "1" {
+			info.AdministratorsSchemaVersion != "1" || info.CoverageSchemaVersion != "1" {
 			t.Fatalf("version JSON = %#v, want version %q, organization schemas [1 2], and all other schemas at 1", info, contractTestVersion)
 		}
 	})
@@ -273,6 +274,7 @@ func TestSchemaCommandsAreLocalAndPublishStableSchemas(t *testing.T) {
 		"attachments":     "https://policy-scout.dev/schemas/attachments/v1",
 		"lint":            "https://policy-scout.dev/schemas/lint/v1",
 		"administrators":  "https://policy-scout.dev/schemas/administrators/v1",
+		"coverage":        "https://policy-scout.dev/schemas/coverage/v1",
 	}
 	for name, wantID := range wantIDs {
 		t.Run(name, func(t *testing.T) {

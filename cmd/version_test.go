@@ -44,7 +44,8 @@ func TestVersionJSON(t *testing.T) {
 	if result.SearchSchemaVersion != awsSearchJSONSchemaVersion ||
 		result.PoliciesSchemaVersion != policiesQuerySchemaVersion ||
 		result.AttachmentsSchemaVersion != attachmentsQuerySchemaVersion ||
-		result.LintSchemaVersion != lintSchemaVersion {
+		result.LintSchemaVersion != lintSchemaVersion ||
+		result.CoverageSchemaVersion != coverageSchemaVersion {
 		t.Fatalf("search/policies/attachments/lint schema versions = %q/%q/%q/%q, want %q/%q/%q/%q",
 			result.SearchSchemaVersion, result.PoliciesSchemaVersion, result.AttachmentsSchemaVersion, result.LintSchemaVersion,
 			awsSearchJSONSchemaVersion, policiesQuerySchemaVersion, attachmentsQuerySchemaVersion, lintSchemaVersion)

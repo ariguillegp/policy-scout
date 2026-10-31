@@ -106,6 +106,7 @@ func TestPublishedSchemasUseDraft202012AndStableIdentity(t *testing.T) {
 		"schemas/lint-v1.json":           "https://policy-scout.dev/schemas/lint/v1",
 		"schemas/administrators-v1.json": "https://policy-scout.dev/schemas/administrators/v1",
 		"schemas/exemptions-v1.json":     "https://policy-scout.dev/schemas/exemptions/v1",
+		"schemas/coverage-v1.json":       "https://policy-scout.dev/schemas/coverage/v1",
 	}
 	for path, wantID := range wantIDs {
 		document, err := schemaFiles.ReadFile(path)
@@ -422,6 +423,51 @@ func TestExemptionsSchemaValidatesProducerVariantsAndRejectsDrift(t *testing.T) 
 		`{"schema_version":"1",` + policySelection + `,` + statementPrefix + `{"source":"condition","category":"region","operator":"StringNotEquals","key":"aws:RequestedRegion","values":["us-east-1"],"interpretable":true}]}]}]}`,
 		`{"schema_version":"1",` + policySelection + `,` + statementPrefix + `{"source":"condition","operator":"NumericLessThan","key":"aws:MultiFactorAuthAge","values":["1"],"exempt_when":"matches_values","interpretable":false,"reason":"not interpreted"}]}]}]}`,
 		`{"schema_version":"1",` + policySelection + `,` + statementPrefix + `{"source":"not_action","values":["iam:*"],"exempt_when":"does_not_match_values","interpretable":true}]}]}]}`,
+	} {
+		assertInvalidDocument(t, schema, invalid)
+	}
+}
+
+func TestCoverageSchemaValidatesProducerVariantsAndRejectsDrift(t *testing.T) {
+	t.Parallel()
+	schema := compilePublishedSchema(t, "schemas/coverage-v1.json")
+	for _, query := range []coverageQuery{
+		{Type: coverageQueryTypePolicy, PolicyID: coverageGuardPolicy},
+		{Type: coverageQueryTypeAction, Action: "cloudtrail:StopLogging"},
+	} {
+		result, err := buildCoverageReport(context.Background(), coverageFixtureClient(), query, coverageRootID, "Root", coverageManagement)
+		if err != nil {
+			t.Fatalf("build %s coverage report: %v", query.Type, err)
+		}
+		var output bytes.Buffer
+		if err := writeCoverageReport(&output, result, json); err != nil {
+			t.Fatalf("write coverage report: %v", err)
+		}
+		if err := validateJSONDocument(t, schema, output.Bytes()); err != nil {
+			t.Fatalf("producer output does not satisfy coverage schema: %v\n%s", err, output.String())
+		}
+		assertFieldsDeclared(t, "schemas/coverage-v1.json", "", output.Bytes())
+	}
+
+	account := `{"account":{"id":"222222222222","name":"Member","state":"ACTIVE"},"path":[{"type":"root","id":"r-root"},{"type":"account","id":"222222222222","name":"Member"}]`
+	summary := `"summary":{"accounts":1,"covered":0,"conditionally_covered":0,"uncovered":1,"excluded":0}`
+	conditionalEvidence := `"evidence":[{"policy_id":"p-cond0001","policy_name":"Cond","attached_to":{"type":"root","id":"r-root"},"inherited":true,` +
+		`"statement":{"index":0,"matched_by":"action","condition":{"Bool":{"aws:ViaAWSService":"false"}}}}]}`
+	assertValidDocument(t, schema, `{"schema_version":"1","query":{"type":"action","action":"cloudtrail:StopLogging"},`+summary+
+		`,"uncovered_accounts":[`+account+`,"evidence":[]}],"conditionally_covered_accounts":[`+account+`,`+conditionalEvidence+
+		`],"covered_accounts":[],"excluded_accounts":[]}`)
+	for _, invalid := range []string{
+		// Uncovered accounts carry no evidence.
+		`{"schema_version":"1","query":{"type":"policy","policy_id":"p-guard001","policy_name":"Guard"},` + summary +
+			`,"uncovered_accounts":[` + account + `,"evidence":[{"policy_id":"p-guard001","policy_name":"Guard","attached_to":{"type":"root","id":"r-root"},"inherited":true}]}],"conditionally_covered_accounts":[],"covered_accounts":[],"excluded_accounts":[]}`,
+		// Policy mode never reports conditional coverage.
+		`{"schema_version":"1","query":{"type":"policy","policy_id":"p-guard001","policy_name":"Guard"},` + summary +
+			`,"uncovered_accounts":[],"conditionally_covered_accounts":[` + account + `,` + conditionalEvidence + `],"covered_accounts":[],"excluded_accounts":[]}`,
+		// Conditional evidence cannot be reported as unconditional action coverage.
+		`{"schema_version":"1","query":{"type":"action","action":"cloudtrail:StopLogging"},` + summary +
+			`,"uncovered_accounts":[],"conditionally_covered_accounts":[],"covered_accounts":[` + account + `,` + conditionalEvidence + `],"excluded_accounts":[]}`,
+		`{"schema_version":"1","query":{"type":"action","action":"cloudtrail:StopLogging"},` + summary +
+			`,"uncovered_accounts":[],"conditionally_covered_accounts":[],"covered_accounts":[],"excluded_accounts":[` + account + `,"reason":"suspended"}]}`,
 	} {
 		assertInvalidDocument(t, schema, invalid)
 	}
