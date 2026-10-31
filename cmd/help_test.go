@@ -60,6 +60,7 @@ func TestSchemaHelpAdvertisesPublishedContracts(t *testing.T) {
 		"policies",
 		"attachments",
 		"lint",
+		"administrators",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("schema help missing %q:\n%s", expected, output)
@@ -151,6 +152,25 @@ func TestAWSLintHelpDocumentsChecksAndExitPolicy(t *testing.T) {
 	} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("lint help missing %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestAWSAdministratorsHelpDocumentsScopeAndControls(t *testing.T) {
+	output := renderHelp(t, awsAdministratorsCmd)
+	for _, expected := range []string{
+		"one compact, versioned result",
+		"resource-based delegation",
+		"delegated administrator accounts",
+		"trusted access",
+		"does not evaluate IAM policies",
+		"--output-format text|json",
+		"(default json)",
+		"--timeout",
+		"--max-retries",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("administrators help missing %q:\n%s", expected, output)
 		}
 	}
 }

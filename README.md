@@ -38,6 +38,9 @@ Root [r-cww9]
 - Lint SCP hygiene across the organization: unattached SCPs, targets and
   documents near AWS limits, redundant inherited attachments, `Allow` with
   `NotAction` or `NotResource`, and more, with an opt-in CI exit status.
+- Answer "who can change these controls?": the management account, the
+  Organizations resource-based delegation policy, delegated administrators and
+  their services, and services with trusted access enabled.
 - Print version-matched JSON Schemas locally without AWS credentials or network access.
 
 ## Installation
@@ -173,6 +176,9 @@ policy-scout aws attachments --policy-id p-a1b2c3d4
 # Report SCP hygiene findings; exit 6 when any finding is medium or high
 policy-scout aws lint --output-format text
 policy-scout aws lint --fail-on medium
+# Show who can change organization controls (configuration only)
+policy-scout aws administrators
+policy-scout aws administrators --output-format text
 
 # Bound AWS work in CI or another automated environment
 policy-scout aws --account-id all --timeout 30s --max-retries 3
@@ -189,6 +195,7 @@ policy-scout schema search
 policy-scout schema policies
 policy-scout schema attachments
 policy-scout schema lint
+policy-scout schema administrators
 
 # Discover the binary and published JSON Schema versions
 policy-scout version
@@ -208,9 +215,9 @@ Published schemas use JSON Schema Draft 2020-12 and are embedded in release
 binaries, so schema discovery performs no network access. Validate output with
 the schema emitted by the same binary version. Formal schemas cover both
 organization versions, auth-status, structured errors, entity search, both
-focused queries, and the SCP lint report. Each document carries its own
-`schema_version`; consumers must tolerate additive object fields within a
-schema version.
+focused queries, the SCP lint report, and the administrators report. Each
+document carries its own `schema_version`; consumers must tolerate additive
+object fields within a schema version.
 
 ## Required AWS permissions
 
@@ -236,6 +243,10 @@ requested:
   lint`
 - `organizations:ListTargetsForPolicy` for `aws attachments`
 - `organizations:ListPolicies` for `aws lint`
+- `organizations:DescribeOrganization`, `organizations:DescribeResourcePolicy`,
+  `organizations:ListDelegatedAdministrators`,
+  `organizations:ListDelegatedServicesForAccount`, and
+  `organizations:ListAWSServiceAccessForOrganization` for `aws administrators`
 
 `aws search` always needs `ListRoots` plus OU traversal permission:
 `ListOrganizationalUnitsForParent`, or `ListChildren` with
@@ -257,6 +268,13 @@ Organizations delegated administrator.
 permissions), and `ListPoliciesForTarget`, plus `ListPolicies` and
 `DescribePolicy` to read every SCP document. It does not call `ListParents` or
 `ListTargetsForPolicy`.
+`aws administrators` does not traverse the hierarchy or list policy
+attachments. It makes one `ListDelegatedServicesForAccount` request series per
+delegated administrator. AWS permits all of its requests only from the
+management account or a delegated administrator. It reports Organizations
+configuration; it does not evaluate IAM policies, interpret the delegation
+policy's statements, or determine which identities inside an account hold the
+corresponding permissions.
 
 ## Documentation
 

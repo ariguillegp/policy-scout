@@ -90,10 +90,25 @@ ordinary organization traversal, either command writes its result only after
 all required AWS calls and rendering succeed. A nonzero exit status therefore
 leaves stdout empty rather than containing a partial JSON document.
 
+To answer "who can change these controls?", request the administrators report.
+It lists the management account, the resource-based delegation policy (or
+`null`), delegated administrators with their delegated services, and services
+with trusted access enabled:
+
+```bash
+policy-scout --error-format json aws administrators \
+  --output-format json --timeout 30s --max-retries 3 \
+  > administrators.json 2> policy-scout-error.json
+```
+
+Its contract is documented in [the output reference](output.md#organization-administrators-document).
+It reports configuration only and does not evaluate effective permissions. A
+nonzero exit status leaves stdout empty.
+
 Every current JSON result and diagnostic has an embedded, credential-free
-Draft 2020-12 schema. Run `policy-scout schema --help` to discover the eight
-published contracts, including separate organization v1/v2, focused-query, and
-SCP lint schemas. Validate each document with the schema emitted by the same binary.
+Draft 2020-12 schema. Run `policy-scout schema --help` to discover the nine
+published contracts, including separate organization v1/v2, focused-query, SCP lint,
+and administrators schemas. Validate each document with the schema emitted by the same binary.
 
 `aws policies` makes calls only for one target, its ancestors, and required
 organization metadata. `aws attachments` uses `ListTargetsForPolicy`, then

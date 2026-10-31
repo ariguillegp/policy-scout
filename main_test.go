@@ -93,6 +93,7 @@ func TestAWSSubcommandHelpIsPublicAndAWSFree(t *testing.T) {
 		"--timeout",
 		"Inspect AWS authentication",
 		"Find AWS accounts and OUs by exact name",
+		"Show which accounts and services can administer the organization",
 	} {
 		if !strings.Contains(result.stdout, expected) {
 			t.Errorf("AWS help does not contain %q:\n%s", expected, result.stdout)
@@ -180,6 +181,16 @@ func TestInvalidInvocationsUseStderrAndStableExitStatuses(t *testing.T) {
 			wantCode: "invalid_invocation", wantMessagePart: "--policy-size-limit",
 		},
 		{
+			name: "administrators positional argument",
+			args: []string{"aws", "administrators", "extra"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "extra",
+		},
+		{
+			name: "administrators invalid timeout",
+			args: []string{"aws", "administrators", "--timeout", "0s"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--timeout",
+		},
+		{
 			// Extra positional arguments to version are classified as invalid_invocation,
 			// matching root, aws, and aws auth status.
 			name: "extra version positional argument", args: []string{"version", "extra"}, wantStatus: 2,
@@ -226,15 +237,16 @@ func TestVersionTextAndJSON(t *testing.T) {
 		assertSuccessfulProcess(t, result, "JSON version")
 
 		var info struct {
-			Version                    string   `json:"version"`
-			OrganizationSchemaVersion  string   `json:"organization_schema_version"`
-			OrganizationSchemaVersions []string `json:"organization_schema_versions"`
-			AuthStatusSchemaVersion    string   `json:"auth_status_schema_version"`
-			ErrorSchemaVersion         string   `json:"error_schema_version"`
-			SearchSchemaVersion        string   `json:"search_schema_version"`
-			PoliciesSchemaVersion      string   `json:"policies_schema_version"`
-			AttachmentsSchemaVersion   string   `json:"attachments_schema_version"`
-			LintSchemaVersion          string   `json:"lint_schema_version"`
+			Version                     string   `json:"version"`
+			OrganizationSchemaVersion   string   `json:"organization_schema_version"`
+			OrganizationSchemaVersions  []string `json:"organization_schema_versions"`
+			AuthStatusSchemaVersion     string   `json:"auth_status_schema_version"`
+			ErrorSchemaVersion          string   `json:"error_schema_version"`
+			SearchSchemaVersion         string   `json:"search_schema_version"`
+			PoliciesSchemaVersion       string   `json:"policies_schema_version"`
+			AttachmentsSchemaVersion    string   `json:"attachments_schema_version"`
+			LintSchemaVersion           string   `json:"lint_schema_version"`
+			AdministratorsSchemaVersion string   `json:"administrators_schema_version"`
 		}
 		if err := json.Unmarshal([]byte(result.stdout), &info); err != nil {
 			t.Fatalf("stdout is not version JSON: %q: %v", result.stdout, err)
@@ -243,7 +255,8 @@ func TestVersionTextAndJSON(t *testing.T) {
 			!reflect.DeepEqual(info.OrganizationSchemaVersions, []string{"1", "2"}) ||
 			info.AuthStatusSchemaVersion != "1" || info.ErrorSchemaVersion != "1" ||
 			info.SearchSchemaVersion != "1" || info.PoliciesSchemaVersion != "1" ||
-			info.AttachmentsSchemaVersion != "1" || info.LintSchemaVersion != "1" {
+			info.AttachmentsSchemaVersion != "1" || info.LintSchemaVersion != "1" ||
+			info.AdministratorsSchemaVersion != "1" {
 			t.Fatalf("version JSON = %#v, want version %q, organization schemas [1 2], and all other schemas at 1", info, contractTestVersion)
 		}
 	})
@@ -259,6 +272,7 @@ func TestSchemaCommandsAreLocalAndPublishStableSchemas(t *testing.T) {
 		"policies":        "https://policy-scout.dev/schemas/policies/v1",
 		"attachments":     "https://policy-scout.dev/schemas/attachments/v1",
 		"lint":            "https://policy-scout.dev/schemas/lint/v1",
+		"administrators":  "https://policy-scout.dev/schemas/administrators/v1",
 	}
 	for name, wantID := range wantIDs {
 		t.Run(name, func(t *testing.T) {
@@ -282,7 +296,18 @@ func TestSchemaCommandsAreLocalAndPublishStableSchemas(t *testing.T) {
 }
 
 func TestMissingAWSCredentialsAreClassifiedWithoutDeveloperCredentials(t *testing.T) {
-	result := runCLI(t, "--error-format", "json", "aws", "--account-id", "123456789012")
+	for _, args := range [][]string{
+		{"aws", "--account-id", "123456789012"},
+		{"aws", "administrators"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			assertMissingCredentialsDiagnostic(t, runCLI(t, append([]string{"--error-format", "json"}, args...)...))
+		})
+	}
+}
+
+func assertMissingCredentialsDiagnostic(t *testing.T, result processResult) {
+	t.Helper()
 	if result.status != 3 {
 		t.Fatalf("exit status = %d, want 3\nstderr: %s", result.status, result.stderr)
 	}

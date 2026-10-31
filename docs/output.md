@@ -253,7 +253,8 @@ policy-scout version --output-format json
   "error_schema_version": "1",
   "search_schema_version": "1",
   "policies_schema_version": "1",
-  "attachments_schema_version": "1"
+  "attachments_schema_version": "1",
+  "administrators_schema_version": "1"
 }
 ```
 
@@ -654,3 +655,106 @@ The management account is included in attachment counts and the
 `management_account_attachment` check, but never in checks about SCP effects.
 Within schema version 1, consumers must tolerate additive object fields and new
 `check` values may be added only with a new schema version.
+
+## Organization administrators document
+
+`policy-scout aws administrators` answers "who can change these controls?" for
+the whole organization. It takes no target selector and emits one
+two-space-indented, newline-terminated document with
+`"schema_version": "1"`, versioned independently of the other contracts:
+
+```bash
+policy-scout aws administrators --output-format json
+```
+
+```json
+{
+  "schema_version": "1",
+  "organization": {
+    "id": "o-exampleorgid",
+    "arn": "arn:aws:organizations::111111111111:organization/o-exampleorgid",
+    "feature_set": "ALL"
+  },
+  "management_account": {
+    "id": "111111111111",
+    "arn": "arn:aws:organizations::111111111111:account/o-exampleorgid/111111111111"
+  },
+  "resource_policy": {
+    "id": "rp-examplepolicy",
+    "arn": "arn:aws:organizations::111111111111:resourcepolicy/o-exampleorgid/rp-examplepolicy",
+    "content": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Principal": { "AWS": "arn:aws:iam::222222222222:root" },
+          "Action": ["organizations:UpdatePolicy"],
+          "Resource": "*"
+        }
+      ]
+    }
+  },
+  "delegated_administrators": [
+    {
+      "id": "222222222222",
+      "name": "Security",
+      "arn": "arn:aws:organizations::111111111111:account/o-exampleorgid/222222222222",
+      "state": "ACTIVE",
+      "delegation_enabled_date": "2025-03-04T10:06:07Z",
+      "services": [
+        {
+          "service_principal": "guardduty.amazonaws.com",
+          "delegation_enabled_date": "2025-03-04T10:06:07Z"
+        }
+      ]
+    }
+  ],
+  "trusted_services": [
+    {
+      "service_principal": "guardduty.amazonaws.com",
+      "date_enabled": "2025-03-01T09:00:00Z"
+    }
+  ]
+}
+```
+
+The administrators schema v1 contract is:
+
+- `organization.id` and `management_account.id` are always present. The
+  management account can always manage organization policies and settings.
+  ARNs and `feature_set` are present when AWS returns them. The management
+  account email is never emitted.
+- `resource_policy` is always present. It is `null` when the organization has
+  no resource-based delegation policy (`DescribeResourcePolicy` reports
+  `ResourcePolicyNotFoundException`). Otherwise it contains the policy `id`,
+  its `arn` when available, and `content`, the parsed JSON policy document
+  exactly as AWS stores it. Policy Scout does not interpret its principals,
+  actions, or conditions.
+- `delegated_administrators` is always an array, sorted by account ID. Each
+  item has `id` and `services`, plus `name`, `arn`, `state`, and
+  `delegation_enabled_date` when AWS returns them. `services` is always an
+  array of `service_principal` values, with `delegation_enabled_date` when
+  available, sorted by service principal. An account that stops being a
+  delegated administrator, or leaves the organization, while the command runs
+  is omitted rather than failing the command.
+- `trusted_services` is always an array of services with trusted access
+  enabled, sorted by `service_principal`, with `date_enabled` when available.
+- Timestamps are RFC 3339 in UTC. Duplicate entries across API pages are
+  merged; conflicting duplicates fail the command.
+
+The document reports Organizations configuration only. It does not evaluate
+IAM policies, SCPs, permission boundaries, or session policies, and does not
+determine which identities in the management account or a delegated
+administrator account hold the corresponding permissions. A trusted service
+listed without a delegated administrator is still administered from the
+management account.
+
+Print its Draft 2020-12 schema locally with `policy-scout schema
+administrators`. Its canonical identifier is
+`https://policy-scout.dev/schemas/administrators/v1`, and its version is
+reported as `administrators_schema_version` by
+`policy-scout version --output-format json`.
+
+`--output-format text` prints the same information, including the indented
+delegation policy document, for people. Like other text output, it is not a
+stable automation interface.

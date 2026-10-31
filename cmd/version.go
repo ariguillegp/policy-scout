@@ -15,15 +15,16 @@ import (
 var version = "dev"
 
 type versionInfo struct {
-	Version                    string   `json:"version"`
-	OrganizationSchemaVersion  string   `json:"organization_schema_version"`
-	OrganizationSchemaVersions []string `json:"organization_schema_versions"`
-	AuthStatusSchemaVersion    string   `json:"auth_status_schema_version"`
-	ErrorSchemaVersion         string   `json:"error_schema_version"`
-	SearchSchemaVersion        string   `json:"search_schema_version"`
-	PoliciesSchemaVersion      string   `json:"policies_schema_version"`
-	AttachmentsSchemaVersion   string   `json:"attachments_schema_version"`
-	LintSchemaVersion          string   `json:"lint_schema_version"`
+	Version                     string   `json:"version"`
+	OrganizationSchemaVersion   string   `json:"organization_schema_version"`
+	OrganizationSchemaVersions  []string `json:"organization_schema_versions"`
+	AuthStatusSchemaVersion     string   `json:"auth_status_schema_version"`
+	ErrorSchemaVersion          string   `json:"error_schema_version"`
+	SearchSchemaVersion         string   `json:"search_schema_version"`
+	PoliciesSchemaVersion       string   `json:"policies_schema_version"`
+	AttachmentsSchemaVersion    string   `json:"attachments_schema_version"`
+	LintSchemaVersion           string   `json:"lint_schema_version"`
+	AdministratorsSchemaVersion string   `json:"administrators_schema_version"`
 }
 
 var (
@@ -48,15 +49,16 @@ func init() {
 
 func printVersion(writer io.Writer, output outputFormat) error {
 	info := versionInfo{
-		Version:                    version,
-		OrganizationSchemaVersion:  organizationJSONSchemaVersion,
-		OrganizationSchemaVersions: []string{organizationJSONSchemaVersion, organizationPolicyDocumentsJSONSchemaVersion},
-		AuthStatusSchemaVersion:    authStatusJSONSchemaVersion,
-		ErrorSchemaVersion:         errorJSONSchemaVersion,
-		SearchSchemaVersion:        awsSearchJSONSchemaVersion,
-		PoliciesSchemaVersion:      policiesQuerySchemaVersion,
-		AttachmentsSchemaVersion:   attachmentsQuerySchemaVersion,
-		LintSchemaVersion:          lintSchemaVersion,
+		Version:                     version,
+		OrganizationSchemaVersion:   organizationJSONSchemaVersion,
+		OrganizationSchemaVersions:  []string{organizationJSONSchemaVersion, organizationPolicyDocumentsJSONSchemaVersion},
+		AuthStatusSchemaVersion:     authStatusJSONSchemaVersion,
+		ErrorSchemaVersion:          errorJSONSchemaVersion,
+		SearchSchemaVersion:         awsSearchJSONSchemaVersion,
+		PoliciesSchemaVersion:       policiesQuerySchemaVersion,
+		AttachmentsSchemaVersion:    attachmentsQuerySchemaVersion,
+		LintSchemaVersion:           lintSchemaVersion,
+		AdministratorsSchemaVersion: administratorsSchemaVersion,
 	}
 	if output == json {
 		encoder := encodingjson.NewEncoder(writer)

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://policy-scout.dev/schemas/administrators/v1",
+  "title": "Policy Scout organization administrators result schema v1",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "organization": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "arn": { "type": "string", "minLength": 1 },
+        "feature_set": { "type": "string", "minLength": 1 }
+      },
+      "required": ["id"]
+    },
+    "management_account": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/accountID" },
+        "arn": { "type": "string", "minLength": 1 }
+      },
+      "required": ["id"]
+    },
+    "resource_policy": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "arn": { "type": "string", "minLength": 1 },
+            "content": { "type": "object" }
+          },
+          "required": ["id", "content"]
+        }
+      ]
+    },
+    "delegated_administrators": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/$defs/accountID" },
+          "name": { "type": "string", "minLength": 1 },
+          "arn": { "type": "string", "minLength": 1 },
+          "state": { "type": "string", "minLength": 1 },
+          "delegation_enabled_date": { "$ref": "#/$defs/timestamp" },
+          "services": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "service_principal": { "type": "string", "minLength": 1 },
+                "delegation_enabled_date": { "$ref": "#/$defs/timestamp" }
+              },
+              "required": ["service_principal"]
+            }
+          }
+        },
+        "required": ["id", "services"]
+      }
+    },
+    "trusted_services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "service_principal": { "type": "string", "minLength": 1 },
+          "date_enabled": { "$ref": "#/$defs/timestamp" }
+        },
+        "required": ["service_principal"]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "organization",
+    "management_account",
+    "resource_policy",
+    "delegated_administrators",
+    "trusted_services"
+  ],
+  "$defs": {
+    "accountID": { "type": "string", "pattern": "^[0-9]{12}$" },
+    "timestamp": { "type": "string", "format": "date-time" }
+  }
+}

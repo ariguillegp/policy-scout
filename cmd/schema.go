@@ -32,6 +32,7 @@ func init() {
 	addSchemaCommand("policies", "Print the focused policies-query result JSON Schema", "schemas/policies-v1.json")
 	addSchemaCommand("attachments", "Print the focused attachments-query result JSON Schema", "schemas/attachments-v1.json")
 	addSchemaCommand("lint", "Print the SCP lint report JSON Schema", "schemas/lint-v1.json")
+	addSchemaCommand("administrators", "Print the organization administrators result JSON Schema", "schemas/administrators-v1.json")
 }
 
 func addSchemaCommand(name, short, path string) {

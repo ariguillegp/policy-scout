@@ -92,14 +92,15 @@ func assertFieldsDeclared(t *testing.T, path, definition string, document []byte
 func TestPublishedSchemasUseDraft202012AndStableIdentity(t *testing.T) {
 	t.Parallel()
 	wantIDs := map[string]string{
-		"schemas/organization-v1.json": "https://policy-scout.dev/schemas/organization/v1",
-		"schemas/organization-v2.json": "https://policy-scout.dev/schemas/organization/v2",
-		"schemas/auth-status-v1.json":  "https://policy-scout.dev/schemas/auth-status/v1",
-		"schemas/error-v1.json":        "https://policy-scout.dev/schemas/error/v1",
-		"schemas/search-v1.json":       "https://policy-scout.dev/schemas/search/v1",
-		"schemas/policies-v1.json":     "https://policy-scout.dev/schemas/policies/v1",
-		"schemas/attachments-v1.json":  "https://policy-scout.dev/schemas/attachments/v1",
-		"schemas/lint-v1.json":         "https://policy-scout.dev/schemas/lint/v1",
+		"schemas/organization-v1.json":   "https://policy-scout.dev/schemas/organization/v1",
+		"schemas/organization-v2.json":   "https://policy-scout.dev/schemas/organization/v2",
+		"schemas/auth-status-v1.json":    "https://policy-scout.dev/schemas/auth-status/v1",
+		"schemas/error-v1.json":          "https://policy-scout.dev/schemas/error/v1",
+		"schemas/search-v1.json":         "https://policy-scout.dev/schemas/search/v1",
+		"schemas/policies-v1.json":       "https://policy-scout.dev/schemas/policies/v1",
+		"schemas/attachments-v1.json":    "https://policy-scout.dev/schemas/attachments/v1",
+		"schemas/lint-v1.json":           "https://policy-scout.dev/schemas/lint/v1",
+		"schemas/administrators-v1.json": "https://policy-scout.dev/schemas/administrators/v1",
 	}
 	for path, wantID := range wantIDs {
 		document, err := schemaFiles.ReadFile(path)
@@ -315,6 +316,34 @@ func TestLintSchemaValidatesProducerAndRejectsContractDrift(t *testing.T) {
 		header + `[{"check":"redundant_attachment","severity":"low","message":"m","rationale":"r","target":{"type":"root","id":"r-root"},"policy":{"id":"p-policy01","name":"P","aws_managed":false},"evidence":{"inherited_from":[{"type":"root","id":"r-root"}]}}]}`,
 		header + `[{"check":"unattached_policy","severity":"high","message":"m","rationale":"r","policy":{"id":"p-policy01","name":"P","aws_managed":false},"evidence":{}}]}`,
 		`{"schema_version":"1","root":{"type":"account","id":"111111111111"},"limits":{"policies_per_target":10,"policy_document_characters":10240},"checks":[],"summary":{"total":0,"high":0,"medium":0,"low":0},"findings":[]}`,
+	} {
+		assertInvalidDocument(t, schema, invalid)
+	}
+}
+
+func TestAdministratorsSchemaValidatesProducerVariants(t *testing.T) {
+	t.Parallel()
+	schema := compilePublishedSchema(t, "schemas/administrators-v1.json")
+	result, err := buildAdministrators(context.Background(), administratorsFixtureClient(false))
+	if err != nil {
+		t.Fatalf("build administrators: %v", err)
+	}
+	var output bytes.Buffer
+	if err := writeAdministrators(&output, result, json); err != nil {
+		t.Fatalf("write administrators: %v", err)
+	}
+	if err := validateJSONDocument(t, schema, output.Bytes()); err != nil {
+		t.Fatalf("producer output does not satisfy administrators schema: %v\n%s", err, output.String())
+	}
+	assertFieldsDeclared(t, "schemas/administrators-v1.json", "", output.Bytes())
+
+	assertValidDocument(t, schema, `{"schema_version":"1","organization":{"id":"o-example"},"management_account":{"id":"111111111111"},"resource_policy":null,"delegated_administrators":[],"trusted_services":[]}`)
+	for _, invalid := range []string{
+		`{"schema_version":"1","organization":{"id":"o-example"},"management_account":{"id":"111111111111"},"delegated_administrators":[],"trusted_services":[]}`,
+		`{"schema_version":"1","organization":{"id":"o-example"},"management_account":{"id":"1111"},"resource_policy":null,"delegated_administrators":[],"trusted_services":[]}`,
+		`{"schema_version":"1","organization":{"id":"o-example"},"management_account":{"id":"111111111111"},"resource_policy":{"id":"rp-1","content":"{}"},"delegated_administrators":[],"trusted_services":[]}`,
+		`{"schema_version":"1","organization":{"id":"o-example"},"management_account":{"id":"111111111111"},"resource_policy":null,"delegated_administrators":[{"id":"222222222222"}],"trusted_services":[]}`,
+		`{"schema_version":"1","organization":{"id":"o-example"},"management_account":{"id":"111111111111"},"resource_policy":null,"delegated_administrators":[],"trusted_services":[{"service_principal":"sso.amazonaws.com","date_enabled":"yesterday"}]}`,
 	} {
 		assertInvalidDocument(t, schema, invalid)
 	}
