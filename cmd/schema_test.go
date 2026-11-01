@@ -5,6 +5,7 @@ import (
 	"context"
 	encodingjson "encoding/json"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -107,6 +108,7 @@ func TestPublishedSchemasUseDraft202012AndStableIdentity(t *testing.T) {
 		"schemas/administrators-v1.json": "https://policy-scout.dev/schemas/administrators/v1",
 		"schemas/exemptions-v1.json":     "https://policy-scout.dev/schemas/exemptions/v1",
 		"schemas/coverage-v1.json":       "https://policy-scout.dev/schemas/coverage/v1",
+		"schemas/changes-v1.json":        "https://policy-scout.dev/schemas/changes/v1",
 	}
 	for path, wantID := range wantIDs {
 		document, err := schemaFiles.ReadFile(path)
@@ -468,6 +470,52 @@ func TestCoverageSchemaValidatesProducerVariantsAndRejectsDrift(t *testing.T) {
 			`,"uncovered_accounts":[],"conditionally_covered_accounts":[],"covered_accounts":[` + account + `,` + conditionalEvidence + `],"excluded_accounts":[]}`,
 		`{"schema_version":"1","query":{"type":"action","action":"cloudtrail:StopLogging"},` + summary +
 			`,"uncovered_accounts":[],"conditionally_covered_accounts":[],"covered_accounts":[],"excluded_accounts":[` + account + `,"reason":"suspended"}]}`,
+	} {
+		assertInvalidDocument(t, schema, invalid)
+	}
+}
+
+func TestChangesSchemaValidatesProducerAndRejectsContractDrift(t *testing.T) {
+	t.Parallel()
+	schema := compilePublishedSchema(t, "schemas/changes-v1.json")
+	query := changesFixtureQuery()
+	query.PolicyID, query.TargetID = changesOtherPolicy, changesWorkloadAccount
+	for _, query := range []changesQuery{changesFixtureQuery(), query} {
+		result, err := buildChanges(context.Background(), changesSTSClient(), changesFixtureClient(), query, 0)
+		if err != nil {
+			t.Fatalf("build changes: %v", err)
+		}
+		var output bytes.Buffer
+		if err := writeChanges(&output, result, json); err != nil {
+			t.Fatalf("write changes: %v", err)
+		}
+		if err := validateJSONDocument(t, schema, output.Bytes()); err != nil {
+			t.Fatalf("producer output does not satisfy changes schema: %v\n%s", err, output.String())
+		}
+		assertFieldsDeclared(t, "schemas/changes-v1.json", "", output.Bytes())
+		var decoded struct {
+			Events []encodingjson.RawMessage `json:"events"`
+		}
+		if err := encodingjson.Unmarshal(output.Bytes(), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range decoded.Events {
+			assertFieldsDeclared(t, "schemas/changes-v1.json", "event", event)
+		}
+	}
+
+	envelope := `"schema_version":"1","source":"cloudtrail:LookupEvents","account_id":"111111111111","region":"us-east-1","start_time":"2026-10-01T00:00:00Z","end_time":"2026-11-01T00:00:00Z","event_names":["AttachPolicy"]`
+	event := `"event_id":"e1","event_time":"2026-10-02T00:00:00Z","event_name":"AttachPolicy","caller":{"type":"Root"}`
+	assertValidDocument(t, schema, `{`+envelope+`,"events":[]}`)
+	assertValidDocument(t, schema, `{`+envelope+`,"events":[{`+event+`}]}`)
+	for _, invalid := range []string{
+		`{` + envelope + `}`,
+		`{` + strings.Replace(envelope, `"111111111111"`, `"1111"`, 1) + `,"events":[]}`,
+		`{` + strings.Replace(envelope, `"2026-10-01T00:00:00Z"`, `"last week"`, 1) + `,"events":[]}`,
+		`{` + envelope + `,"policy_id":"rp-example1","events":[]}`,
+		`{` + envelope + `,"events":[{"event_id":"e1","event_name":"AttachPolicy","caller":{}}]}`,
+		`{` + envelope + `,"events":[{` + event + `,"target":{"type":"policy","id":"p-a1b2c3d4"}}]}`,
+		`{` + envelope + `,"events":[{` + event + `,"policy":{}}]}`,
 	} {
 		assertInvalidDocument(t, schema, invalid)
 	}

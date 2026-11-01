@@ -105,6 +105,21 @@ Its contract is documented in [the output reference](output.md#organization-admi
 It reports configuration only and does not evaluate effective permissions. A
 nonzero exit status leaves stdout empty.
 
+To see who actually changed those controls, and when, list recent
+Organizations events from CloudTrail event history. Changes made from a
+delegated administrator account are recorded only in that account, so run it
+there too. Its window cannot start more than 90 days ago:
+
+```bash
+policy-scout --error-format json aws changes --since 24h \
+  --output-format json --timeout 2m --max-retries 5 \
+  > changes.json 2> policy-scout-error.json
+jq -r '.events[] | "\(.event_time) \(.event_name) \(.caller.arn // .caller.invoked_by)"' changes.json
+```
+
+LookupEvents allows two requests per second per account, so the command needs
+at least 7 seconds; see [organization control changes](changes.md).
+
 To find which principals, Regions, or other contexts are exempt from SCP deny
 statements, use the [exemptions document](exemptions.md). It is static
 extraction from policy text, not an effective-permissions evaluation. Like the
@@ -119,9 +134,9 @@ jq '.policies[].deny_statements[].exemptions[] | select(.interpretable | not)' e
 ```
 
 Every current JSON result and diagnostic has an embedded, credential-free
-Draft 2020-12 schema. Run `policy-scout schema --help` to discover the eleven
+Draft 2020-12 schema. Run `policy-scout schema --help` to discover the twelve
 published contracts, including separate organization v1/v2, focused-query, SCP
-lint, administrators, deny-exemptions, and coverage-report schemas. Validate
+lint, administrators, deny-exemptions, coverage-report, and control-changes schemas. Validate
 each document with the schema emitted by the same binary.
 
 `aws policies` makes calls only for one target, its ancestors, and required

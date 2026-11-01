@@ -761,6 +761,14 @@ reported as `administrators_schema_version` by
 delegation policy document, for people. Like other text output, it is not a
 stable automation interface.
 
+## Organization control changes document
+
+`policy-scout aws changes` emits its own versioned document listing recent
+AWS Organizations events that changed organization controls, from CloudTrail
+event history. Its contract, data-source limits, and examples are documented
+in [organization control changes](changes.md). Print its schema with
+`policy-scout schema changes`.
+
 ## SCP deny exemptions document
 
 `policy-scout aws exemptions` emits its own versioned document listing the

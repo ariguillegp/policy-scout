@@ -94,6 +94,7 @@ func TestAWSSubcommandHelpIsPublicAndAWSFree(t *testing.T) {
 		"Inspect AWS authentication",
 		"Find AWS accounts and OUs by exact name",
 		"Show which accounts and services can administer the organization",
+		"Show who changed organization controls and when, from CloudTrail",
 	} {
 		if !strings.Contains(result.stdout, expected) {
 			t.Errorf("AWS help does not contain %q:\n%s", expected, result.stdout)
@@ -191,6 +192,36 @@ func TestInvalidInvocationsUseStderrAndStableExitStatuses(t *testing.T) {
 			wantCode: "invalid_invocation", wantMessagePart: "--timeout",
 		},
 		{
+			name: "changes start outside LookupEvents window",
+			args: []string{"aws", "changes", "--since", "2160h1s"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "last 90 days",
+		},
+		{
+			name: "changes since with start time",
+			args: []string{"aws", "changes", "--since", "24h", "--start-time", "2026-10-01T00:00:00Z"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--since and --start-time",
+		},
+		{
+			name: "changes start after end",
+			args: []string{"aws", "changes", "--since", "24h", "--end-time", "2000-01-01T00:00:00Z"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "must be before end time",
+		},
+		{
+			name: "changes malformed end time",
+			args: []string{"aws", "changes", "--end-time", "yesterday"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--end-time",
+		},
+		{
+			name: "changes invalid policy ID",
+			args: []string{"aws", "changes", "--policy-id", "rp-example1"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--policy-id",
+		},
+		{
+			name: "changes invalid target ID",
+			args: []string{"aws", "changes", "--target-id", "1234"}, wantStatus: 2,
+			wantCode: "invalid_invocation", wantMessagePart: "--target-id",
+		},
+		{
 			// Extra positional arguments to version are classified as invalid_invocation,
 			// matching root, aws, and aws auth status.
 			name: "extra version positional argument", args: []string{"version", "extra"}, wantStatus: 2,
@@ -248,6 +279,7 @@ func TestVersionTextAndJSON(t *testing.T) {
 			LintSchemaVersion           string   `json:"lint_schema_version"`
 			AdministratorsSchemaVersion string   `json:"administrators_schema_version"`
 			CoverageSchemaVersion       string   `json:"coverage_schema_version"`
+			ChangesSchemaVersion        string   `json:"changes_schema_version"`
 		}
 		if err := json.Unmarshal([]byte(result.stdout), &info); err != nil {
 			t.Fatalf("stdout is not version JSON: %q: %v", result.stdout, err)
@@ -257,7 +289,8 @@ func TestVersionTextAndJSON(t *testing.T) {
 			info.AuthStatusSchemaVersion != "1" || info.ErrorSchemaVersion != "1" ||
 			info.SearchSchemaVersion != "1" || info.PoliciesSchemaVersion != "1" ||
 			info.AttachmentsSchemaVersion != "1" || info.LintSchemaVersion != "1" ||
-			info.AdministratorsSchemaVersion != "1" || info.CoverageSchemaVersion != "1" {
+			info.AdministratorsSchemaVersion != "1" || info.CoverageSchemaVersion != "1" ||
+			info.ChangesSchemaVersion != "1" {
 			t.Fatalf("version JSON = %#v, want version %q, organization schemas [1 2], and all other schemas at 1", info, contractTestVersion)
 		}
 	})
@@ -275,6 +308,7 @@ func TestSchemaCommandsAreLocalAndPublishStableSchemas(t *testing.T) {
 		"lint":            "https://policy-scout.dev/schemas/lint/v1",
 		"administrators":  "https://policy-scout.dev/schemas/administrators/v1",
 		"coverage":        "https://policy-scout.dev/schemas/coverage/v1",
+		"changes":         "https://policy-scout.dev/schemas/changes/v1",
 	}
 	for name, wantID := range wantIDs {
 		t.Run(name, func(t *testing.T) {
@@ -301,6 +335,8 @@ func TestMissingAWSCredentialsAreClassifiedWithoutDeveloperCredentials(t *testin
 	for _, args := range [][]string{
 		{"aws", "--account-id", "123456789012"},
 		{"aws", "administrators"},
+		// Exactly 90 days is the oldest window LookupEvents accepts.
+		{"aws", "changes", "--since", "2160h", "--policy-id", "p-a1b2c3d4", "--target-id", "ou-cww9-x2atbcle"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			assertMissingCredentialsDiagnostic(t, runCLI(t, append([]string{"--error-format", "json"}, args...)...))

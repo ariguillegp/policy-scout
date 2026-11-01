@@ -218,6 +218,14 @@ func classifyError(err error) classifiedError {
 			diagnostic.RequestID = requestIDValue
 			return diagnostic
 		case "accessdenied", "accessdeniedexception", "authorizationerror", "forbiddenexception", "notauthorizedexception", "unauthorizedoperation":
+			var operationErr *smithy.OperationError
+			if errors.As(err, &operationErr) && operationErr.Service() == "CloudTrail" {
+				return classifiedError{
+					Code: errorCodeAuthorization, Message: "AWS denied the CloudTrail request.", Operation: operation,
+					Retryable: false, RequestID: requestIDValue,
+					Remediation: "Grant the selected identity cloudtrail:LookupEvents, then retry.", ExitCode: exitAuthorization,
+				}
+			}
 			return classifiedError{
 				Code: errorCodeAuthorization, Message: "AWS denied the Organizations request.", Operation: operation,
 				Retryable: false, RequestID: requestIDValue,

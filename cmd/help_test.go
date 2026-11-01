@@ -63,6 +63,7 @@ func TestSchemaHelpAdvertisesPublishedContracts(t *testing.T) {
 		"administrators",
 		"exemptions",
 		"coverage",
+		"changes",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("schema help missing %q:\n%s", expected, output)
@@ -174,6 +175,32 @@ func TestAWSCoverageHelpDocumentsModesExclusionsAndGapStatus(t *testing.T) {
 	} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("coverage help missing %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestAWSChangesHelpDocumentsDataSourceLimits(t *testing.T) {
+	output := renderHelp(t, awsChangesCmd)
+	for _, expected := range []string{
+		"one compact, versioned result",
+		"LookupEvents in us-east-1",
+		"only the last\n90 days",
+		"two requests per second",
+		"delegated administrator account",
+		"organization trail or CloudTrail Lake",
+		"--start-time",
+		"--end-time",
+		"--since",
+		"--policy-id",
+		"--target-id",
+		"--region",
+		"--output-format text|json",
+		"(default json)",
+		"--timeout",
+		"--max-retries",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("changes help missing %q:\n%s", expected, output)
 		}
 	}
 }

@@ -50,6 +50,9 @@ func TestVersionJSON(t *testing.T) {
 			result.SearchSchemaVersion, result.PoliciesSchemaVersion, result.AttachmentsSchemaVersion, result.LintSchemaVersion,
 			awsSearchJSONSchemaVersion, policiesQuerySchemaVersion, attachmentsQuerySchemaVersion, lintSchemaVersion)
 	}
+	if result.ChangesSchemaVersion != changesSchemaVersion {
+		t.Fatalf("changes schema version = %q, want %q", result.ChangesSchemaVersion, changesSchemaVersion)
+	}
 	if result.ExemptionsSchemaVersion != exemptionsQuerySchemaVersion {
 		t.Fatalf("exemptions schema version = %q, want %q", result.ExemptionsSchemaVersion, exemptionsQuerySchemaVersion)
 	}

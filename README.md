@@ -44,6 +44,9 @@ Root [r-cww9]
 - Answer "who can change these controls?": the management account, the
   Organizations resource-based delegation policy, delegated administrators and
   their services, and services with trusted access enabled.
+- Answer "who did change these controls, and when?" from CloudTrail: SCP
+  edits, attachments, account moves, delegation, and trusted access changes
+  in the last 90 days, with caller, source IP, and request ID.
 - List the principals, Regions, tags, actions, and other contexts exempted from
   SCP deny statements, for one SCP or for every SCP applying to an account or OU.
 - Print version-matched JSON Schemas locally without AWS credentials or network access.
@@ -185,6 +188,11 @@ policy-scout aws lint --fail-on medium
 policy-scout aws administrators
 policy-scout aws administrators --output-format text
 
+# Show who changed organization controls in the last 90 days (CloudTrail event history)
+policy-scout aws changes --since 168h --output-format text
+policy-scout aws changes --policy-id p-e5f6g7h8
+policy-scout aws changes --target-id ou-cww9-x2atbcle --start-time 2026-10-01T00:00:00Z
+
 # List carve-outs (break-glass roles, allowed Regions, NotAction, ...) in SCP denies
 policy-scout aws exemptions --policy-id p-e5f6g7h8
 policy-scout aws exemptions --account-id 339712974046 --output-format text
@@ -214,6 +222,7 @@ policy-scout schema lint
 policy-scout schema administrators
 policy-scout schema exemptions
 policy-scout schema coverage
+policy-scout schema changes
 
 # Discover the binary and published JSON Schema versions
 policy-scout version
@@ -234,7 +243,7 @@ binaries, so schema discovery performs no network access. Validate output with
 the schema emitted by the same binary version. Formal schemas cover both
 organization versions, auth-status, structured errors, entity search, both
 focused queries, the SCP lint report, the administrators report, deny
-exemptions, and coverage reports. Each document carries its own
+exemptions, coverage reports, and control changes. Each document carries its own
 `schema_version`; consumers must tolerate additive object fields within a
 schema version.
 
@@ -295,6 +304,14 @@ configuration; it does not evaluate IAM policies, interpret the delegation
 policy's statements, or determine which identities inside an account hold the
 corresponding permissions.
 
+`aws changes` needs only `cloudtrail:LookupEvents` in `us-east-1`, where
+Organizations records its events, plus `sts:GetCallerIdentity`. LookupEvents
+covers only the last 90 days, only the account whose credentials are used, and
+allows two requests per second, so a run takes at least 7 seconds. Changes made
+from a delegated administrator account are recorded in that account. See
+[organization control changes](docs/changes.md) for the tradeoffs against an
+organization trail or CloudTrail Lake.
+
 `aws exemptions --policy-id` needs only `ListRoots` and `DescribePolicy`. With
 `--account-id` or `--ou-id`, it needs the `aws policies` permissions plus one
 `DescribePolicy` request per unique applicable SCP.
@@ -311,6 +328,7 @@ and does not evaluate effective permissions.
 - [Coverage report contract](docs/output.md#coverage-report-document)
 - [AWS authentication status contract](docs/auth-status.md)
 - [SCP deny exemptions](docs/exemptions.md)
+- [Organization control changes from CloudTrail](docs/changes.md)
 - [Automation, errors, and exit statuses](docs/automation.md)
 - [Releases and changes](https://github.com/ariguillegp/policy-scout/releases)
 

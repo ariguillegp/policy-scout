@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://policy-scout.dev/schemas/changes/v1",
+  "title": "Policy Scout organization control-changes result schema v1",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "source": { "const": "cloudtrail:LookupEvents" },
+    "account_id": { "$ref": "#/$defs/accountID" },
+    "region": { "type": "string", "minLength": 1 },
+    "start_time": { "$ref": "#/$defs/timestamp" },
+    "end_time": { "$ref": "#/$defs/timestamp" },
+    "policy_id": { "type": "string", "pattern": "^p-[0-9A-Za-z_]{8,128}$" },
+    "target_id": { "type": "string", "minLength": 1 },
+    "event_names": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/event" }
+    }
+  },
+  "required": ["schema_version", "source", "account_id", "region", "start_time", "end_time", "event_names", "events"],
+  "$defs": {
+    "accountID": { "type": "string", "pattern": "^[0-9]{12}$" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "event": {
+      "type": "object",
+      "properties": {
+        "event_id": { "$ref": "#/$defs/nonEmpty" },
+        "event_time": { "$ref": "#/$defs/timestamp" },
+        "event_name": { "$ref": "#/$defs/nonEmpty" },
+        "request_id": { "$ref": "#/$defs/nonEmpty" },
+        "source_ip": { "$ref": "#/$defs/nonEmpty" },
+        "caller": {
+          "type": "object",
+          "properties": {
+            "type": { "$ref": "#/$defs/nonEmpty" },
+            "arn": { "$ref": "#/$defs/nonEmpty" },
+            "account_id": { "$ref": "#/$defs/nonEmpty" },
+            "principal_id": { "$ref": "#/$defs/nonEmpty" },
+            "user_name": { "$ref": "#/$defs/nonEmpty" },
+            "session_issuer_arn": { "$ref": "#/$defs/nonEmpty" },
+            "invoked_by": { "$ref": "#/$defs/nonEmpty" }
+          }
+        },
+        "policy": {
+          "type": "object",
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmpty" },
+            "name": { "$ref": "#/$defs/nonEmpty" },
+            "type": { "$ref": "#/$defs/nonEmpty" }
+          },
+          "minProperties": 1
+        },
+        "resource_policy_id": { "$ref": "#/$defs/nonEmpty" },
+        "target": {
+          "type": "object",
+          "properties": {
+            "type": { "enum": ["root", "organizational_unit", "account"] },
+            "id": { "$ref": "#/$defs/nonEmpty" }
+          },
+          "required": ["type", "id"]
+        },
+        "source_parent_id": { "$ref": "#/$defs/nonEmpty" },
+        "destination_parent_id": { "$ref": "#/$defs/nonEmpty" },
+        "service_principal": { "$ref": "#/$defs/nonEmpty" },
+        "error_code": { "$ref": "#/$defs/nonEmpty" },
+        "error_message": { "$ref": "#/$defs/nonEmpty" }
+      },
+      "required": ["event_id", "event_time", "event_name", "caller"]
+    }
+  }
+}
