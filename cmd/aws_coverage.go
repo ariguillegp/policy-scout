@@ -39,14 +39,15 @@ var coverageActionPattern = regexp.MustCompile(`^[A-Za-z0-9-]+:[A-Za-z0-9]+$`)
 var (
 	coveragePolicyID   string
 	coverageAction     string
-	coverageFormat     outputFormat = json
+	coverageFormat     findingsOutputFormat = json
 	coverageFailOnGaps bool
 
 	awsCoverageCmd = &cobra.Command{
 		Use:   "coverage (--policy-id <p-id> | --action <service:Action>)",
 		Short: "Find accounts that an SCP or a Deny for one action does not cover",
 		Long: `Return one compact, versioned coverage report for every account in the
-organization. JSON output is used by default.
+organization. JSON output is used by default; --output-format sarif reports
+uncovered and conditionally covered accounts as SARIF 2.1.0 results.
 
 With --policy-id, an account is covered when the SCP is attached to it directly
 or to one of its root/OU ancestors. With --action, an account is covered when an
@@ -67,6 +68,7 @@ is uncovered. Exit status 6 is not a failure: stderr is empty.`,
 		Example: `  policy-scout aws coverage --policy-id p-a1b2c3d4
   policy-scout aws coverage --action cloudtrail:StopLogging
   policy-scout aws coverage --action cloudtrail:StopLogging --output-format text
+  policy-scout aws coverage --action cloudtrail:StopLogging --output-format sarif > coverage.sarif
   policy-scout aws coverage --policy-id p-a1b2c3d4 --fail-on-gaps --timeout 2m --max-retries 3`,
 		Args: noArgsValidator,
 		RunE: runAWSCoverageCommand,
@@ -77,8 +79,8 @@ func init() {
 	awsCoverageCmd.Flags().StringVar(&coveragePolicyID, "policy-id", "", "exact AWS service control policy ID that every account should receive")
 	awsCoverageCmd.Flags().StringVar(&coverageAction, "action", "", `exact IAM action, such as "cloudtrail:StopLogging", that every account should deny`)
 	awsCoverageCmd.Flags().BoolVar(&coverageFailOnGaps, "fail-on-gaps", false, "exit 6 after writing the report when any applicable account is uncovered")
-	awsCoverageCmd.Flags().VarP(&coverageFormat, "output-format", "o", `output format: "json" or "text"`)
-	if err := awsCoverageCmd.RegisterFlagCompletionFunc("output-format", outputFormatCompletion); err != nil {
+	awsCoverageCmd.Flags().VarP(&coverageFormat, "output-format", "o", `output format: "json", "text", or "sarif"`)
+	if err := awsCoverageCmd.RegisterFlagCompletionFunc("output-format", findingsOutputFormatCompletion); err != nil {
 		panic(err)
 	}
 	addAWSExecutionFlags(awsCoverageCmd)
@@ -187,7 +189,7 @@ func displayCoverageReport(
 	client organizationsClient,
 	query coverageQuery,
 	rootID, rootName, managementAccountID string,
-	outputFormat outputFormat,
+	outputFormat findingsOutputFormat,
 	failOnGaps bool,
 ) error {
 	result, err := buildCoverageReport(ctx, client, query, rootID, rootName, managementAccountID)
@@ -498,7 +500,10 @@ func iamWildcardMatch(pattern, value string) bool {
 	return p == len(pattern)
 }
 
-func writeCoverageReport(writer io.Writer, result coverageResult, outputFormat outputFormat) error {
+func writeCoverageReport(writer io.Writer, result coverageResult, outputFormat findingsOutputFormat) error {
+	if outputFormat == sarif {
+		return writeJSONDocument(writer, coverageSARIF(result), "coverage report")
+	}
 	if outputFormat != text {
 		return writeJSONDocument(writer, result, "coverage report")
 	}

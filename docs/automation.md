@@ -211,6 +211,42 @@ OU and account. With `--action` it also calls `DescribePolicy` once per unique
 applicable SCP; with `--policy-id` it calls `DescribePolicy` once for the
 selected policy. Set `--timeout` with large organizations in mind.
 
+## GitHub code scanning with SARIF
+
+`--output-format sarif` on `aws lint` and `aws coverage` writes findings that
+`github/codeql-action/upload-sarif` can upload to code scanning. Alerts point
+to synthetic `aws-organizations/...` paths and keep their identity across
+runs; see the [SARIF contract](output.md#sarif-output). Exit status `6` still
+applies, so upload the file even when the gate step fails:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write        # for configure-aws-credentials
+  security-events: write # for upload-sarif
+steps:
+  - uses: actions/checkout@v7
+  - uses: actions/setup-go@v7
+    with:
+      go-version: stable
+  - uses: aws-actions/configure-aws-credentials@v6
+    with:
+      role-to-assume: arn:aws:iam::111111111111:role/policy-scout-read-only
+      aws-region: us-east-1
+  - run: go install github.com/ariguillegp/policy-scout@latest
+  - run: policy-scout aws lint --fail-on high --output-format sarif > scp-lint.sarif
+  - uses: github/codeql-action/upload-sarif@v4
+    if: ${{ !cancelled() }} # also after exit 6
+    with:
+      sarif_file: scp-lint.sarif
+```
+
+For reproducible runs, pin a release that includes SARIF output instead of `@latest`.
+
+Each log sets its own `automationDetails.id`, so lint and each coverage query
+can be uploaded from the same workflow without a `category` input. Code scanning
+requires GitHub Code Security on private repositories.
+
 ## Structured errors
 
 `--error-format json` produces one compact JSON object on stderr. The flag is

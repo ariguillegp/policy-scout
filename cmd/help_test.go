@@ -149,7 +149,7 @@ func TestAWSLintHelpDocumentsChecksAndExitPolicy(t *testing.T) {
 		"(default 10)",
 		"--policy-size-limit int",
 		"(default 10240)",
-		"--output-format text|json",
+		"--output-format text|json|sarif",
 		"--timeout",
 		"--max-retries",
 	} {
@@ -169,7 +169,7 @@ func TestAWSCoverageHelpDocumentsModesExclusionsAndGapStatus(t *testing.T) {
 		"management account",
 		"--fail-on-gaps",
 		"exit 6",
-		"--output-format text|json",
+		"--output-format text|json|sarif",
 		"--timeout",
 		"--max-retries",
 	} {

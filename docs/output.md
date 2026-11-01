@@ -8,6 +8,11 @@ releases.
 All formats preserve the same hierarchy, policy identities, attachment
 sources, and deterministic entity and attachment ordering.
 
+`aws lint` and `aws coverage` also accept `--output-format sarif`, which writes
+their findings as a [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
+log for GitHub code scanning and other SARIF consumers. See
+[SARIF output](#sarif-output).
+
 ## HTML output
 
 HTML output is a self-contained report that can be saved and opened directly in
@@ -920,3 +925,47 @@ exits `0` whenever the report is complete, including when gaps are found. With
 `6` when `summary.uncovered` is greater than zero. As with `aws lint --fail-on`,
 exit status `6` is not a failure and stderr is empty. Conditional coverage alone does not fail the command; see
 [automation](automation.md#coverage-gates-in-ci).
+
+## SARIF output
+
+`aws lint --output-format sarif` and `aws coverage --output-format sarif` write
+one SARIF 2.1.0 log with one run. The log validates against the official
+[OASIS schema](https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json).
+`--fail-on` and `--fail-on-gaps` behave as they do with JSON: the complete log is
+written to stdout before exit status `6`.
+
+- **Rules.** Each lint check is one rule, `aws-lint/<check>`, such as
+  `aws-lint/allow_not_action`. The full description is the check rationale, and
+  `help` gives the remediation. Coverage has two rules,
+  `aws-coverage/uncovered_account` and
+  `aws-coverage/conditionally_covered_account`. Covered and excluded accounts
+  are not results.
+- **Levels.** Lint severity `high` maps to `error`, `medium` to `warning`, and
+  `low` to `note`. The `attachment_limit` and `policy_size_limit` rules report
+  `warning` at the limit and `note` near it. Uncovered accounts are `error`, and
+  conditionally covered accounts are `warning`.
+- **Locations.** Findings describe AWS resources, not files, but GitHub code
+  scanning displays only results that have a physical location, and it rejects
+  absolute URIs with a non-`file` scheme such as an ARN. Each result therefore
+  has a synthetic repository-relative URI,
+  `aws-organizations/<root-id>/<root|organizational_unit|account|policy>/<id>`,
+  at line 1. A logical location repeats the same path. The file does not need
+  to exist in the repository.
+- **Fingerprints.** `partialFingerprints.primaryLocationLineHash` hashes only
+  the rule, root ID, and stable AWS IDs: the target, policy, and statement
+  index for lint, and the query and account for coverage. Renaming an account
+  or SCP, or a severity change, keeps the same alert.
+- **Category.** `automationDetails.id` is `policy-scout/aws-lint/<root-id>/` or
+  `policy-scout/aws-coverage/<root-id>/<policy|action>/<selector>/`, so every
+  coverage query is tracked separately, and uploading it does not close the
+  alerts of another query.
+- **Properties.** Each result's `properties` carry the lint finding's
+  `severity`, `target`, `policy`, and `evidence`, or the coverage
+  account entry from the JSON report.
+
+`aws exemptions` has no SARIF output. It lists carve-outs written into SCPs,
+most of which are intended, such as a break-glass role, so they are an
+inventory rather than findings. Tracking them as alerts would add an open alert
+for every intended exemption. A condition reported with `"interpretable": false`
+is a limit of static extraction, not a defect in the SCP, so it is not a
+finding either.

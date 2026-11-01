@@ -110,8 +110,8 @@ func lintSeverityRank(severity string) int {
 }
 
 var (
-	lintFormat          outputFormat = json
-	lintFailOn                       = lintSeverity(lintFailOnNone)
+	lintFormat          findingsOutputFormat = json
+	lintFailOn                               = lintSeverity(lintFailOnNone)
 	lintAttachmentLimit int
 	lintSizeLimit       int
 
@@ -121,7 +121,7 @@ var (
 		Long: `Traverse the entire organization, read every SCP and its document, and
 report mechanical SCP configuration findings. Each finding names the check,
 its severity, what was found, where, and why it matters. JSON output is used
-by default.
+by default; --output-format sarif writes a SARIF 2.1.0 log for code scanning.
 
 Checks: unattached SCPs; roots, OUs, and accounts at or near the per-target
 SCP attachment limit; documents at or near the SCP size limit; deny-only SCPs
@@ -135,6 +135,7 @@ not change the exit status. Use --fail-on to exit with status 6 after writing
 the complete report when any finding has at least that severity.`,
 		Example: `  policy-scout aws lint
   policy-scout aws lint --output-format text
+  policy-scout aws lint --output-format sarif > scp-lint.sarif
   policy-scout aws lint --fail-on medium --timeout 2m --max-retries 3 > scp-lint.json`,
 		Args: noArgsValidator,
 		RunE: runAWSLintCommand,
@@ -142,8 +143,8 @@ the complete report when any finding has at least that severity.`,
 )
 
 func init() {
-	awsLintCmd.Flags().VarP(&lintFormat, "output-format", "o", `output format: "json" or "text"`)
-	if err := awsLintCmd.RegisterFlagCompletionFunc("output-format", outputFormatCompletion); err != nil {
+	awsLintCmd.Flags().VarP(&lintFormat, "output-format", "o", `output format: "json", "text", or "sarif"`)
+	if err := awsLintCmd.RegisterFlagCompletionFunc("output-format", findingsOutputFormatCompletion); err != nil {
 		panic(err)
 	}
 	awsLintCmd.Flags().Var(&lintFailOn, "fail-on", `exit with status 6 when a finding has at least this severity: "none", "low", "medium", or "high"`)
@@ -678,7 +679,10 @@ func sortLintFindings(findings []lintFinding) {
 	})
 }
 
-func writeLintReport(writer io.Writer, report lintReport, outputFormat outputFormat) error {
+func writeLintReport(writer io.Writer, report lintReport, outputFormat findingsOutputFormat) error {
+	if outputFormat == sarif {
+		return writeJSONDocument(writer, lintSARIF(report), "lint report")
+	}
 	if outputFormat != text {
 		return writeJSONDocument(writer, report, "lint report")
 	}

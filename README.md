@@ -184,6 +184,8 @@ policy-scout aws attachments --policy-id p-a1b2c3d4
 # Report SCP hygiene findings; exit 6 when any finding is medium or high
 policy-scout aws lint --output-format text
 policy-scout aws lint --fail-on medium
+# Write findings as SARIF 2.1.0 for GitHub code scanning (also on aws coverage)
+policy-scout aws lint --output-format sarif > scp-lint.sarif
 # Show who can change organization controls (configuration only)
 policy-scout aws administrators
 policy-scout aws administrators --output-format text
@@ -330,6 +332,7 @@ and does not evaluate effective permissions.
 - [SCP deny exemptions](docs/exemptions.md)
 - [Organization control changes from CloudTrail](docs/changes.md)
 - [Automation, errors, and exit statuses](docs/automation.md)
+- [SARIF output and GitHub code scanning](docs/automation.md#github-code-scanning-with-sarif)
 - [Releases and changes](https://github.com/ariguillegp/policy-scout/releases)
 
 ## Development
