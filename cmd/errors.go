@@ -226,6 +226,15 @@ func classifyError(err error) classifiedError {
 					Remediation: "Grant the selected identity cloudtrail:LookupEvents, then retry.", ExitCode: exitAuthorization,
 				}
 			}
+			if errors.As(err, &operationErr) && operationErr.Service() == "Account" {
+				return classifiedError{
+					Code: errorCodeAuthorization, Message: "AWS denied the Account Management request.", Operation: operation,
+					Retryable: false, RequestID: requestIDValue,
+					Remediation: "Grant the selected identity account:ListRegions in the management account or an Account Management delegated administrator, " +
+						"enable trusted access for Account Management, then retry.",
+					ExitCode: exitAuthorization,
+				}
+			}
 			return classifiedError{
 				Code: errorCodeAuthorization, Message: "AWS denied the Organizations request.", Operation: operation,
 				Retryable: false, RequestID: requestIDValue,

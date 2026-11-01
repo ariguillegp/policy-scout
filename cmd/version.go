@@ -28,6 +28,7 @@ type versionInfo struct {
 	ExemptionsSchemaVersion     string   `json:"exemptions_schema_version"`
 	CoverageSchemaVersion       string   `json:"coverage_schema_version"`
 	ChangesSchemaVersion        string   `json:"changes_schema_version"`
+	RegionDriftSchemaVersion    string   `json:"region_drift_schema_version"`
 }
 
 var (
@@ -65,6 +66,7 @@ func printVersion(writer io.Writer, output outputFormat) error {
 		ExemptionsSchemaVersion:     exemptionsQuerySchemaVersion,
 		CoverageSchemaVersion:       coverageSchemaVersion,
 		ChangesSchemaVersion:        changesSchemaVersion,
+		RegionDriftSchemaVersion:    regionDriftSchemaVersion,
 	}
 	if output == json {
 		encoder := encodingjson.NewEncoder(writer)

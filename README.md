@@ -22,10 +22,12 @@ Root [r-cww9]
 > [!IMPORTANT]
 > Policy Scout lists names from SCP summaries and can optionally retrieve SCP
 > documents. Apart from `aws coverage`, which matches SCP Deny statements against
-> one IAM action, it does not evaluate SCP Allow/Deny semantics. It never
-> evaluates IAM policies, resource policies, permission boundaries, session
-> policies, or effective permissions. `aws lint` inspects SCP statements only
-> for specific elements, such as an `Allow` statement that uses `NotAction`.
+> one IAM action, and `aws region-drift`, which reads their
+> `aws:RequestedRegion` conditions, it does not evaluate SCP Allow/Deny
+> semantics. It never evaluates IAM policies, resource policies, permission
+> boundaries, session policies, or effective permissions. `aws lint` inspects
+> SCP statements only for specific elements, such as an `Allow` statement that
+> uses `NotAction`.
 
 ## Features
 
@@ -49,6 +51,9 @@ Root [r-cww9]
   in the last 90 days, with caller, source IP, and request ID.
 - List the principals, Regions, tags, actions, and other contexts exempted from
   SCP deny statements, for one SCP or for every SCP applying to an account or OU.
+- Find Region drift: compare each account's enabled Regions with the Regions
+  its SCPs allow, and report blind spots and conditions that cannot be
+  interpreted, with an opt-in CI exit status.
 - Print version-matched JSON Schemas locally without AWS credentials or network access.
 
 ## Installation
@@ -206,6 +211,10 @@ policy-scout aws coverage --policy-id p-a1b2c3d4
 policy-scout aws coverage --action cloudtrail:StopLogging
 policy-scout aws coverage --action cloudtrail:StopLogging --fail-on-gaps --output-format text
 
+# Compare enabled Regions with SCP Region restrictions; fail CI (exit 6) on blind spots
+policy-scout aws region-drift --output-format text
+policy-scout aws region-drift --fail-on-blind-spots
+
 # Bound AWS work in CI or another automated environment
 policy-scout aws --account-id all --timeout 30s --max-retries 3
 
@@ -225,6 +234,7 @@ policy-scout schema administrators
 policy-scout schema exemptions
 policy-scout schema coverage
 policy-scout schema changes
+policy-scout schema region-drift
 
 # Discover the binary and published JSON Schema versions
 policy-scout version
@@ -245,9 +255,9 @@ binaries, so schema discovery performs no network access. Validate output with
 the schema emitted by the same binary version. Formal schemas cover both
 organization versions, auth-status, structured errors, entity search, both
 focused queries, the SCP lint report, the administrators report, deny
-exemptions, coverage reports, and control changes. Each document carries its own
-`schema_version`; consumers must tolerate additive object fields within a
-schema version.
+exemptions, coverage reports, control changes, and Region drift reports. Each
+document carries its own `schema_version`; consumers must tolerate additive
+object fields within a schema version.
 
 ## Required AWS permissions
 
@@ -277,6 +287,7 @@ requested:
   `organizations:ListDelegatedAdministrators`,
   `organizations:ListDelegatedServicesForAccount`, and
   `organizations:ListAWSServiceAccessForOrganization` for `aws administrators`
+- `account:ListRegions` for `aws region-drift`
 
 `aws search` always needs `ListRoots` plus OU traversal permission:
 `ListOrganizationalUnitsForParent`, or `ListChildren` with
@@ -324,6 +335,13 @@ permissions as `aws --account-id all` plus `DescribePolicy`: once for
 use `ListTargetsForPolicy`. It reports the configured SCP Deny coverage only
 and does not evaluate effective permissions.
 
+`aws region-drift` needs the `aws coverage --action` permissions plus
+`account:ListRegions`, which it calls once per active member account with its
+`AccountId`. AWS permits that only from the management account or a delegated
+administrator for Account Management, with trusted access for Account
+Management enabled. It does not call `ListRegions` for the management account
+or for accounts that are not `ACTIVE`.
+
 ## Documentation
 
 - [Output formats and organization JSON contract](docs/output.md)
@@ -331,6 +349,7 @@ and does not evaluate effective permissions.
 - [AWS authentication status contract](docs/auth-status.md)
 - [SCP deny exemptions](docs/exemptions.md)
 - [Organization control changes from CloudTrail](docs/changes.md)
+- [Region drift](docs/region-drift.md)
 - [Automation, errors, and exit statuses](docs/automation.md)
 - [SARIF output and GitHub code scanning](docs/automation.md#github-code-scanning-with-sarif)
 - [Releases and changes](https://github.com/ariguillegp/policy-scout/releases)

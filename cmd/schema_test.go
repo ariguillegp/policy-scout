@@ -109,6 +109,7 @@ func TestPublishedSchemasUseDraft202012AndStableIdentity(t *testing.T) {
 		"schemas/exemptions-v1.json":     "https://policy-scout.dev/schemas/exemptions/v1",
 		"schemas/coverage-v1.json":       "https://policy-scout.dev/schemas/coverage/v1",
 		"schemas/changes-v1.json":        "https://policy-scout.dev/schemas/changes/v1",
+		"schemas/region-drift-v1.json":   "https://policy-scout.dev/schemas/region-drift/v1",
 	}
 	for path, wantID := range wantIDs {
 		document, err := schemaFiles.ReadFile(path)
@@ -516,6 +517,42 @@ func TestChangesSchemaValidatesProducerAndRejectsContractDrift(t *testing.T) {
 		`{` + envelope + `,"events":[{"event_id":"e1","event_name":"AttachPolicy","caller":{}}]}`,
 		`{` + envelope + `,"events":[{` + event + `,"target":{"type":"policy","id":"p-a1b2c3d4"}}]}`,
 		`{` + envelope + `,"events":[{` + event + `,"policy":{}}]}`,
+	} {
+		assertInvalidDocument(t, schema, invalid)
+	}
+}
+
+func TestRegionDriftSchemaValidatesProducerAndRejectsDrift(t *testing.T) {
+	t.Parallel()
+	schema := compilePublishedSchema(t, "schemas/region-drift-v1.json")
+	result, _ := buildRegionDriftFixture(t)
+	var output bytes.Buffer
+	if err := writeRegionDriftReport(&output, result, json); err != nil {
+		t.Fatalf("write region drift report: %v", err)
+	}
+	if err := validateJSONDocument(t, schema, output.Bytes()); err != nil {
+		t.Fatalf("producer output does not satisfy region-drift schema: %v\n%s", err, output.String())
+	}
+	assertFieldsDeclared(t, "schemas/region-drift-v1.json", "", output.Bytes())
+
+	summary := `"summary":{"accounts":1,"restricted":1,"unrestricted":0,"with_blind_spots":0,"with_uninterpretable_restrictions":0,"excluded":0}`
+	account := `{"account":{"id":"222222222222","name":"Member","state":"ACTIVE"},"path":[{"type":"root","id":"r-root"},{"type":"account","id":"222222222222","name":"Member"}],` +
+		`"enabled_regions":[{"region":"us-east-1","opt_status":"ENABLED_BY_DEFAULT"}],"blind_spot_regions":[],"enabled_denied_regions":[],"allowed_disabled_regions":[],"uninterpretable_restrictions":[],`
+	restriction := func(operator string) string {
+		return `{"policy_id":"p-regions01","policy_name":"Regions","attached_to":{"type":"root","id":"r-root"},"inherited":true,"statement_index":0,` +
+			`"kind":"allow_list","operator":"` + operator + `","regions":["us-east-1"],"carve_outs":[]}`
+	}
+	document := func(entry string) string {
+		return `{"schema_version":"1",` + summary + `,"accounts":[` + account + entry + `}],"excluded_accounts":[]}`
+	}
+	assertValidDocument(t, schema, document(`"no_region_restriction":false,"enabled_allowed_regions":["us-east-1"],"restrictions":[`+restriction("StringNotEquals")+`]`))
+	for _, invalid := range []string{
+		// A restricted account names at least one restriction.
+		document(`"no_region_restriction":false,"enabled_allowed_regions":["us-east-1"],"restrictions":[]`),
+		// An unrestricted account cannot allow Regions.
+		document(`"no_region_restriction":true,"enabled_allowed_regions":["us-east-1"],"restrictions":[]`),
+		// An allow list uses a negated string operator.
+		document(`"no_region_restriction":false,"enabled_allowed_regions":["us-east-1"],"restrictions":[` + restriction("StringEquals") + `]`),
 	} {
 		assertInvalidDocument(t, schema, invalid)
 	}

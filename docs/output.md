@@ -782,6 +782,13 @@ account or OU. Its contract, interpretation rules, and examples are documented
 in [SCP deny exemptions](exemptions.md). Print its schema with
 `policy-scout schema exemptions`.
 
+## Region drift document
+
+`policy-scout aws region-drift` emits its own versioned document comparing
+each account's enabled Regions with the Regions its SCPs allow. Its contract
+and examples are documented in [Region drift](region-drift.md). Print its
+schema with `policy-scout schema region-drift`.
+
 ## Coverage report document
 
 `policy-scout aws coverage` answers coverage-gap questions for every account

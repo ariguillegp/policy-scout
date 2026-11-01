@@ -53,6 +53,9 @@ func TestVersionJSON(t *testing.T) {
 	if result.ChangesSchemaVersion != changesSchemaVersion {
 		t.Fatalf("changes schema version = %q, want %q", result.ChangesSchemaVersion, changesSchemaVersion)
 	}
+	if result.RegionDriftSchemaVersion != regionDriftSchemaVersion {
+		t.Fatalf("region drift schema version = %q, want %q", result.RegionDriftSchemaVersion, regionDriftSchemaVersion)
+	}
 	if result.ExemptionsSchemaVersion != exemptionsQuerySchemaVersion {
 		t.Fatalf("exemptions schema version = %q, want %q", result.ExemptionsSchemaVersion, exemptionsQuerySchemaVersion)
 	}

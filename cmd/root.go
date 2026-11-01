@@ -73,7 +73,8 @@ func executeCommandContext(
 	}
 	var findingsErr *lintFindingsError
 	var gapErr *coverageGapError
-	if errors.As(err, &findingsErr) || errors.As(err, &gapErr) {
+	var blindSpotErr *regionDriftBlindSpotError
+	if errors.As(err, &findingsErr) || errors.As(err, &gapErr) || errors.As(err, &blindSpotErr) {
 		return exitFindings
 	}
 

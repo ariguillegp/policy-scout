@@ -134,10 +134,11 @@ jq '.policies[].deny_statements[].exemptions[] | select(.interpretable | not)' e
 ```
 
 Every current JSON result and diagnostic has an embedded, credential-free
-Draft 2020-12 schema. Run `policy-scout schema --help` to discover the twelve
+Draft 2020-12 schema. Run `policy-scout schema --help` to discover the thirteen
 published contracts, including separate organization v1/v2, focused-query, SCP
-lint, administrators, deny-exemptions, coverage-report, and control-changes schemas. Validate
-each document with the schema emitted by the same binary.
+lint, administrators, deny-exemptions, coverage-report, control-changes, and
+Region drift schemas. Validate each document with the schema emitted by the
+same binary.
 
 `aws policies` makes calls only for one target, its ancestors, and required
 organization metadata. `aws attachments` uses `ListTargetsForPolicy`, then
@@ -210,6 +211,37 @@ jq -e '.summary.conditionally_covered == 0' coverage.json
 OU and account. With `--action` it also calls `DescribePolicy` once per unique
 applicable SCP; with `--policy-id` it calls `DescribePolicy` once for the
 selected policy. Set `--timeout` with large organizations in mind.
+
+## Region drift gates in CI
+
+`aws region-drift` compares each account's enabled Regions with the Regions its
+SCPs allow. By default it exits `0` whenever the report is complete. Add
+`--fail-on-blind-spots` to fail a pipeline when any compared account has an
+enabled Region that no Region restriction denies:
+
+```bash
+policy-scout --error-format json aws region-drift --fail-on-blind-spots \
+  --output-format json --timeout 5m --max-retries 3 \
+  > region-drift.json 2> policy-scout-error.json
+status=$?
+if [ "$status" -eq 6 ]; then
+  jq -r '.accounts[] | select(.blind_spot_regions != []) | "\(.account.id): \(.blind_spot_regions | join(", "))"' region-drift.json
+fi
+```
+
+Exit status `6` means the report on stdout is complete and
+`summary.with_blind_spots` is greater than zero. It is not a failure: stderr
+is empty. Excluded accounts never trigger it. To also require review of Region
+conditions that could not be interpreted, test them explicitly:
+
+```bash
+jq -e '.summary.with_uninterpretable_restrictions == 0' region-drift.json
+```
+
+The command traverses the entire organization, calls `DescribePolicy` once per
+unique applicable SCP, and makes one `ListRegions` request series per active
+member account, so allow a longer `--timeout` in large organizations. See
+[Region drift](region-drift.md).
 
 ## GitHub code scanning with SARIF
 
@@ -295,7 +327,7 @@ signal and is intentionally absent from the JSON object.
 | `3` | `aws_credentials` | Missing, invalid, or expired credentials. | Refresh or configure credentials. |
 | `4` | `aws_access_denied` | AWS denied the operation. | Grant the required read permissions. |
 | `5` | `aws_transient` | Retryable network, throttling, or AWS service failure. | Retry with backoff. |
-| `6` | — | `aws lint --fail-on` found at least one finding at or above the threshold, or `aws coverage --fail-on-gaps` found uncovered accounts. Not a failure; stderr is empty. | Parse stdout and fix or accept the findings or gaps. |
+| `6` | — | `aws lint --fail-on` found at least one finding at or above the threshold, `aws coverage --fail-on-gaps` found uncovered accounts, or `aws region-drift --fail-on-blind-spots` found blind spots. Not a failure; stderr is empty. | Parse stdout and fix or accept the findings or gaps. |
 
 Human-readable stderr remains the default. Retry only transient failures without
 first changing the invocation, credentials, or permissions.
@@ -303,9 +335,9 @@ first changing the invocation, credentials, or permissions.
 ## Timeouts and retries
 
 `--timeout <duration>` sets one overall deadline for AWS configuration and
-credential loading plus all STS and Organizations calls made by the command.
-Durations use Go syntax such as `500ms`, `30s`, and `2m`, and must be greater
-than zero.
+credential loading plus all STS, Organizations, and Account Management calls
+made by the command. Durations use Go syntax such as `500ms`, `30s`, and `2m`,
+and must be greater than zero.
 
 `--max-retries <count>` limits each AWS request to that many retries after its
 initial attempt. `0` disables retries; accepted values are `0` through `10`.

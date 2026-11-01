@@ -64,6 +64,7 @@ func TestSchemaHelpAdvertisesPublishedContracts(t *testing.T) {
 		"exemptions",
 		"coverage",
 		"changes",
+		"region-drift",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("schema help missing %q:\n%s", expected, output)
@@ -155,6 +156,29 @@ func TestAWSLintHelpDocumentsChecksAndExitPolicy(t *testing.T) {
 	} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("lint help missing %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestAWSRegionDriftHelpDocumentsBucketsExclusionsAndBlindSpotStatus(t *testing.T) {
+	output := renderHelp(t, awsRegionDriftCmd)
+	for _, expected := range []string{
+		"one compact, versioned Region drift report",
+		"ListRegions",
+		"aws:RequestedRegion",
+		"blind spots",
+		"cannot be interpreted cleanly",
+		"management account",
+		"not ACTIVE",
+		"delegated administrator for Account Management",
+		"--fail-on-blind-spots",
+		"exit 6",
+		"--output-format text|json",
+		"--timeout",
+		"--max-retries",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("region-drift help missing %q:\n%s", expected, output)
 		}
 	}
 }
